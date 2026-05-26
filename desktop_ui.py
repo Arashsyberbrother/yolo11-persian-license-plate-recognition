@@ -35,6 +35,10 @@ from PySide6.QtWidgets import (
 )
 from ultralytics import YOLO
 
+DEFAULT_MODEL_NAME = "yolo11_anpr_ghd.pt"
+DEFAULT_OUTPUT_DIR = "outputs"
+THREAD_STOP_TIMEOUT_MS = 2000
+
 
 @dataclass
 class InferenceConfig:
@@ -165,6 +169,8 @@ class InferenceThread(QThread):
         if boxes is not None and len(boxes) > 0:
             now = time.time()
             allow_save = self.config.dedupe_interval <= 0 or (now - self._last_saved_time) >= self.config.dedupe_interval
+            frame_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            frame_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for det_idx, box in enumerate(boxes):
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 conf = float(box.conf[0])
@@ -181,30 +187,37 @@ class InferenceThread(QThread):
                 )
 
                 if allow_save:
-                    crop = frame[max(y1, 0):max(y2, 0), max(x1, 0):max(x2, 0)]
+                    frame_h, frame_w = frame.shape[:2]
+                    x1c = max(0, min(x1, frame_w))
+                    y1c = max(0, min(y1, frame_h))
+                    x2c = max(0, min(x2, frame_w))
+                    y2c = max(0, min(y2, frame_h))
+                    if x2c <= x1c or y2c <= y1c:
+                        continue
+                    crop = frame[y1c:y2c, x1c:x2c]
                     if crop.size == 0:
                         continue
-                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-                    crop_name = f"{stamp}_{frame_idx}_{det_idx}.jpg"
+                    crop_name = f"{frame_stamp}_{frame_idx}_{det_idx}.jpg"
                     crop_path = str(Path(self.config.output_dir) / crop_name)
                     cv2.imwrite(crop_path, crop)
 
-                    annotated_path = ""
-                    if self.config.save_annotated:
-                        ann_name = f"{stamp}_{frame_idx}_annotated.jpg"
-                        annotated_path = str(Path(self.config.output_dir) / ann_name)
-                        cv2.imwrite(annotated_path, annotated)
-
                     detections.append(
                         {
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "timestamp": frame_time,
                             "frame_index": frame_idx,
                             "plate_text": "",
                             "confidence": round(conf, 4),
                             "crop_path": crop_path,
-                            "annotated_path": annotated_path,
+                            "annotated_path": "",
                         }
                     )
+
+            if allow_save and self.config.save_annotated and detections:
+                ann_name = f"{frame_stamp}_{frame_idx}_annotated.jpg"
+                annotated_path = str(Path(self.config.output_dir) / ann_name)
+                cv2.imwrite(annotated_path, annotated)
+                for item in detections:
+                    item["annotated_path"] = annotated_path
 
             if allow_save:
                 self._last_saved_time = now
@@ -237,7 +250,7 @@ class MainWindow(QMainWindow):
         self.input_btn = QPushButton("انتخاب")
         self.input_btn.clicked.connect(self._open_input)
 
-        self.weights_edit = QLineEdit(str(Path(__file__).with_name("yolo11_anpr_ghd.pt")))
+        self.weights_edit = QLineEdit(str(Path(__file__).with_name(DEFAULT_MODEL_NAME)))
         self.weights_btn = QPushButton("وزن مدل")
         self.weights_btn.clicked.connect(self._browse_weights)
 
@@ -256,14 +269,14 @@ class MainWindow(QMainWindow):
         self.iou_spin.setSingleStep(0.05)
         self.iou_spin.setValue(0.45)
 
-        self.output_edit = QLineEdit(str(Path(__file__).with_name("outputs")))
+        self.output_edit = QLineEdit(str(Path(__file__).with_name(DEFAULT_OUTPUT_DIR)))
         self.output_btn = QPushButton("پوشه خروجی")
         self.output_btn.clicked.connect(self._browse_output)
 
-        self.dedupe_spin = QSpinBox()
-        self.dedupe_spin.setRange(0, 300)
-        self.dedupe_spin.setValue(2)
-        self.dedupe_spin.setSuffix(" ثانیه")
+        self.dedupe_interval_spin = QSpinBox()
+        self.dedupe_interval_spin.setRange(0, 300)
+        self.dedupe_interval_spin.setValue(2)
+        self.dedupe_interval_spin.setSuffix(" ثانیه")
 
         self.save_annotated_cb = QCheckBox("ذخیره فریم‌های حاشیه‌نویسی‌شده")
         self.auto_log_cb = QCheckBox("ذخیره خودکار گزارش CSV")
@@ -299,7 +312,7 @@ class MainWindow(QMainWindow):
         output_layout.addWidget(self.output_btn)
         form.addRow("پوشه خروجی", output_row)
 
-        form.addRow("بازه حذف تکرار", self.dedupe_spin)
+        form.addRow("بازه حذف تکرار", self.dedupe_interval_spin)
         left_layout.addLayout(form)
         left_layout.addWidget(self.save_annotated_cb)
         left_layout.addWidget(self.auto_log_cb)
@@ -439,7 +452,7 @@ class MainWindow(QMainWindow):
             conf=float(self.conf_spin.value()),
             iou=float(self.iou_spin.value()),
             output_dir=self.output_edit.text().strip(),
-            dedupe_interval=int(self.dedupe_spin.value()),
+            dedupe_interval=int(self.dedupe_interval_spin.value()),
             save_annotated=self.save_annotated_cb.isChecked(),
             auto_save_log=self.auto_log_cb.isChecked(),
         )
@@ -480,14 +493,16 @@ class MainWindow(QMainWindow):
     def stop_inference(self):
         if self.thread and self.thread.isRunning():
             self.thread.stop()
-            self.thread.wait(2000)
+            stopped = self.thread.wait(THREAD_STOP_TIMEOUT_MS)
+            if not stopped:
+                self.error_label.setText("خطا: توقف پردازش زمان‌بر شد.")
             self.state_label.setText("وضعیت: متوقف")
             self.pause_action.setText("مکث")
 
     def _on_frame(self, frame):
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
-        image = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
+        image = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
         pix = QPixmap.fromImage(image).scaled(
             self.preview_label.size(),
             Qt.KeepAspectRatio,
