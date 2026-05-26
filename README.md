@@ -82,3 +82,28 @@ You can try the whole pipleline in [License_Plate_Recognition_end_to_end.ipynb](
     - https://github.com/Arijit1080/Licence-Plate-Detection-using-YOLO-V8
     - https://github.com/AarohiSingla/YOLO11-Custom-Object-Detection
     - https://www.youtube.com/watch?v=bgAUHS1Adzo
+
+## Persian RTL Desktop UI (PySide6)
+
+A desktop interface is available in `desktop_ui.py` for running detection on image/video/webcam with a Persian-first RTL layout.
+
+### Install
+
+```bash
+pip install -r requirements.txt
+```
+
+### Run
+
+```bash
+python desktop_ui.py
+```
+
+### Features
+- Persian-first RTL UI with modern dark styling
+- Non-blocking inference (background thread)
+- Live preview with plate bounding boxes
+- Automatic plate crop saving (`YYYYMMDD_HHMMSS_mmm_frame_detection.jpg`)
+- Optional annotated-frame saving
+- Results table with timestamp/frame/confidence/thumbnail
+- CSV export from toolbar (and optional auto log in output folder)
