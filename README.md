@@ -105,5 +105,9 @@ python desktop_ui.py
 - Live preview with plate bounding boxes
 - Automatic plate crop saving (`YYYYMMDD_HHMMSS_mmm_frame_detection.jpg`)
 - Optional annotated-frame saving
-- Results table with timestamp/frame/confidence/thumbnail
-- CSV export from toolbar (and optional auto log in output folder)
+- OCR text normalization and duplicate suppression by plate text + interval
+- Results table with timestamp/frame/plate text/confidence/thumbnail, sorting, and filters
+- Clear-results and open-output-folder actions from toolbar/panel
+- Runtime analytics in status bar (total detections, average confidence, average FPS)
+- CSV export with `duplicate_count` and optional auto log in output folder
+- Optional OCR debug artifact saving and automatic end-of-run summary JSON
