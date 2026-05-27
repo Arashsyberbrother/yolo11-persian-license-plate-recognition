@@ -57,6 +57,40 @@ OCR_CLASS_NAMES = [
     "hj", "j", "k", "kh", "l", "m", "n", "p", "r", "s",
     "sad", "sh", "t", "ta", "th", "Vav", "y", "z", "za", "zad", "zal", "zh",
 ]
+OCR_LABEL_TO_CHAR = {
+    "Alef": "ا",
+    "BE": "ب",
+    "ch": "چ",
+    "d": "د",
+    "ein": "ع",
+    "f": "ف",
+    "g": "گ",
+    "ghaf": "ق",
+    "ghein": "غ",
+    "h2": "ه",
+    "hj": "ح",
+    "j": "ج",
+    "k": "ک",
+    "kh": "خ",
+    "l": "ل",
+    "m": "م",
+    "n": "ن",
+    "p": "پ",
+    "r": "ر",
+    "s": "س",
+    "sad": "ص",
+    "sh": "ش",
+    "t": "ت",
+    "ta": "ط",
+    "th": "ث",
+    "Vav": "و",
+    "y": "ی",
+    "z": "ز",
+    "za": "ض",
+    "zad": "ظ",
+    "zal": "ذ",
+    "zh": "ژ",
+}
 
 
 def straighten_skewed_rectangle(img):
@@ -401,32 +435,58 @@ class InferenceThread(QThread):
             gray = cv2.cvtColor(straight, cv2.COLOR_RGB2GRAY)
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             gray = clahe.apply(gray)
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(thresh, 8, cv2.CV_32S)
-            img_area = thresh.shape[0] * thresh.shape[1]
+            threshold_candidates = [
+                cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1],
+                cv2.adaptiveThreshold(
+                    gray,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY_INV,
+                    31,
+                    5,
+                ),
+            ]
+            area_ranges = [
+                (OCR_MIN_AREA, OCR_MAX_AREA),
+                (OCR_MIN_AREA * 0.5, min(0.12, OCR_MAX_AREA * 2.4)),
+            ]
+
             digits = []
-            for i in range(1, num_labels):
-                x = stats[i, cv2.CC_STAT_LEFT]
-                y = stats[i, cv2.CC_STAT_TOP]
-                w = stats[i, cv2.CC_STAT_WIDTH]
-                h = stats[i, cv2.CC_STAT_HEIGHT]
-                area = stats[i, cv2.CC_STAT_AREA]
-                if area > OCR_MIN_AREA * img_area and area <= OCR_MAX_AREA * img_area and (
-                    w <= h or abs(w - h) < OCR_MAX_ASPECT_DIFF
-                ):
-                    component_mask = (labels == i).astype("uint8") * 255
-                    digit = component_mask[y:y + h, x:x + w]
-                    digit = cv2.resize(digit, (OCR_DIGIT_SIZE, OCR_DIGIT_SIZE), interpolation=cv2.INTER_AREA)
-                    digit = np.pad(digit, (OCR_PADDING, OCR_PADDING), "constant", constant_values=0).astype(float) / 255.0
-                    digits.append((x, digit))
+            best_thresh = threshold_candidates[0]
+            for thresh in threshold_candidates:
+                num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(thresh, 8, cv2.CV_32S)
+                img_area = thresh.shape[0] * thresh.shape[1]
+                for min_area_ratio, max_area_ratio in area_ranges:
+                    candidate_digits = []
+                    for i in range(1, num_labels):
+                        x = stats[i, cv2.CC_STAT_LEFT]
+                        y = stats[i, cv2.CC_STAT_TOP]
+                        w = stats[i, cv2.CC_STAT_WIDTH]
+                        h = stats[i, cv2.CC_STAT_HEIGHT]
+                        area = stats[i, cv2.CC_STAT_AREA]
+                        if area > min_area_ratio * img_area and area <= max_area_ratio * img_area and (
+                            w <= h or abs(w - h) < OCR_MAX_ASPECT_DIFF
+                        ):
+                            component_mask = (labels == i).astype("uint8") * 255
+                            digit = component_mask[y:y + h, x:x + w]
+                            digit = cv2.resize(digit, (OCR_DIGIT_SIZE, OCR_DIGIT_SIZE), interpolation=cv2.INTER_AREA)
+                            digit = np.pad(digit, (OCR_PADDING, OCR_PADDING), "constant", constant_values=0).astype(float) / 255.0
+                            candidate_digits.append((x, digit))
+                    if len(candidate_digits) > len(digits):
+                        digits = candidate_digits
+                        best_thresh = thresh
+                    if len(digits) >= 6:
+                        break
+                if len(digits) >= 6:
+                    break
             if not digits:
                 return ""
             digits.sort(key=lambda item: item[0])
-            chars = [self._classifier.predict(1.0 - digit) for _, digit in digits]
+            chars = [OCR_LABEL_TO_CHAR.get(pred, pred) for pred in (self._classifier.predict(1.0 - digit) for _, digit in digits)]
             if self.config.debug_ocr and self._ocr_debug_dir and debug_tag:
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_crop.jpg"), plate_crop)
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
-                cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), thresh)
+                cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), best_thresh)
             return normalize_plate_text("".join(chars))
         except Exception:
             return ""
@@ -664,10 +724,14 @@ class MainWindow(QMainWindow):
                 border-radius: 14px;
             }
             QToolBar {
-                background: rgba(15, 23, 42, 0.7);
+                background: qlineargradient(
+                    x1: 0, y1: 0, x2: 1, y2: 1,
+                    stop: 0 rgba(148, 163, 184, 0.18),
+                    stop: 1 rgba(30, 41, 59, 0.58)
+                );
                 spacing: 8px;
                 padding: 8px;
-                border: 1px solid rgba(148, 163, 184, 0.28);
+                border: 1px solid rgba(191, 219, 254, 0.32);
                 border-radius: 12px;
                 margin: 8px;
             }
@@ -698,10 +762,14 @@ class MainWindow(QMainWindow):
                 border-radius: 12px;
             }
             QHeaderView::section {
-                background: rgba(15, 23, 42, 0.78);
+                background: qlineargradient(
+                    x1: 0, y1: 0, x2: 1, y2: 1,
+                    stop: 0 rgba(191, 219, 254, 0.22),
+                    stop: 1 rgba(30, 41, 59, 0.68)
+                );
                 color: #e2e8f0;
                 padding: 6px;
-                border: none;
+                border: 1px solid rgba(191, 219, 254, 0.2);
             }
             QTableWidget#glassTable {
                 gridline-color: rgba(148, 163, 184, 0.2);
