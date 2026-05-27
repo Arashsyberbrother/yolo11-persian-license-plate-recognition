@@ -140,7 +140,7 @@ class InferenceThread(QThread):
         self._mutex = QMutex()
         self._last_saved_time = 0.0
         self._records = []
-        self._ocr_error = ""
+        self._ocr_status_message = ""
         self._classifier = None
 
     def stop(self):
@@ -217,11 +217,11 @@ class InferenceThread(QThread):
         try:
             weights_path = Path(__file__).with_name(DEFAULT_OCR_MODEL_NAME)
             if not weights_path.is_file():
-                self._ocr_error = "مدل OCR یافت نشد."
+                self._ocr_status_message = f"مدل OCR یافت نشد: {weights_path}"
                 return
             self._classifier = PlateCharClassifier(str(weights_path), OCR_CLASS_NAMES)
         except Exception as exc:
-            self._ocr_error = f"OCR غیرفعال شد: {exc}"
+            self._ocr_status_message = f"OCR غیرفعال شد: {exc}"
             self._classifier = None
 
     def _emit_detections(self, detections):
@@ -295,7 +295,7 @@ class InferenceThread(QThread):
                         {
                             "timestamp": frame_time,
                             "frame_index": frame_idx,
-                            "plate_text": plate_text if plate_text else self._ocr_error,
+                            "plate_text": plate_text if plate_text else self._ocr_status_message,
                             "confidence": round(conf, 4),
                             "crop_path": crop_path,
                             "annotated_path": "",
@@ -334,7 +334,7 @@ class InferenceThread(QThread):
                 w = stats[i, cv2.CC_STAT_WIDTH]
                 h = stats[i, cv2.CC_STAT_HEIGHT]
                 area = stats[i, cv2.CC_STAT_AREA]
-                if area > OCR_MIN_AREA * img_area and area < OCR_MAX_AREA * img_area and (w <= h or abs(w - h) < 10):
+                if area > OCR_MIN_AREA * img_area and area <= OCR_MAX_AREA * img_area and (w <= h or abs(w - h) < 10):
                     component_mask = (labels == i).astype("uint8") * 255
                     digit = component_mask[y:y + h, x:x + w]
                     digit = cv2.resize(digit, (26, 26), interpolation=cv2.INTER_AREA)
