@@ -51,7 +51,8 @@ OCR_MAX_AREA = 0.05
 OCR_MAX_ASPECT_DIFF = 10
 OCR_RELAXED_MIN_AREA_FACTOR = 0.5
 OCR_RELAXED_MAX_AREA = 0.12
-OCR_RELAXED_MAX_AREA_FACTOR = 2.4
+OCR_RELAXED_MAX_AREA_MULTIPLIER = 2.4
+OCR_MIN_PLATE_CHARS = 6
 OCR_DIGIT_SIZE = 26
 OCR_PADDING = 2
 OCR_CLASS_NAMES = [
@@ -449,7 +450,7 @@ class InferenceThread(QThread):
                     5,
                 ),
             ]
-            relaxed_max_area_ratio = max(OCR_RELAXED_MAX_AREA, OCR_MAX_AREA * OCR_RELAXED_MAX_AREA_FACTOR)
+            relaxed_max_area_ratio = max(OCR_RELAXED_MAX_AREA, OCR_MAX_AREA * OCR_RELAXED_MAX_AREA_MULTIPLIER)
             area_ranges = [
                 (OCR_MIN_AREA, OCR_MAX_AREA),
                 (
@@ -459,7 +460,7 @@ class InferenceThread(QThread):
             ]
 
             digits = []
-            best_thresh = threshold_candidates[0]
+            selected_thresh = threshold_candidates[0]
             has_enough_digits = False
             for thresh in threshold_candidates:
                 num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(thresh, 8, cv2.CV_32S)
@@ -482,8 +483,8 @@ class InferenceThread(QThread):
                             candidate_digits.append((x, digit))
                     if len(candidate_digits) > len(digits):
                         digits = candidate_digits
-                        best_thresh = thresh
-                    if len(digits) >= 6:
+                        selected_thresh = thresh
+                    if len(digits) >= OCR_MIN_PLATE_CHARS:
                         has_enough_digits = True
                         break
                 if has_enough_digits:
@@ -496,7 +497,7 @@ class InferenceThread(QThread):
             if self.config.debug_ocr and self._ocr_debug_dir and debug_tag:
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_crop.jpg"), plate_crop)
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
-                cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), best_thresh)
+                cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), selected_thresh)
             return normalize_plate_text("".join(chars))
         except Exception:
             return ""
