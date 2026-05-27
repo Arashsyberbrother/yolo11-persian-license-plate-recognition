@@ -49,6 +49,9 @@ THREAD_STOP_TIMEOUT_MS = 2000
 OCR_MIN_AREA = 0.005
 OCR_MAX_AREA = 0.05
 OCR_MAX_ASPECT_DIFF = 10
+OCR_RELAXED_MIN_AREA_FACTOR = 0.5
+OCR_RELAXED_MAX_AREA = 0.12
+OCR_RELAXED_MAX_AREA_FACTOR = 2.4
 OCR_DIGIT_SIZE = 26
 OCR_PADDING = 2
 OCR_CLASS_NAMES = [
@@ -448,7 +451,10 @@ class InferenceThread(QThread):
             ]
             area_ranges = [
                 (OCR_MIN_AREA, OCR_MAX_AREA),
-                (OCR_MIN_AREA * 0.5, max(0.12, OCR_MAX_AREA * 2.4)),
+                (
+                    OCR_MIN_AREA * OCR_RELAXED_MIN_AREA_FACTOR,
+                    max(OCR_RELAXED_MAX_AREA, OCR_MAX_AREA * OCR_RELAXED_MAX_AREA_FACTOR),
+                ),
             ]
 
             digits = []
