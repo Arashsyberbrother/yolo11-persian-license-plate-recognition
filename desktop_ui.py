@@ -44,6 +44,9 @@ DEFAULT_OUTPUT_DIR = "outputs"
 THREAD_STOP_TIMEOUT_MS = 2000
 OCR_MIN_AREA = 0.005
 OCR_MAX_AREA = 0.05
+OCR_MAX_ASPECT_DIFF = 10
+OCR_DIGIT_SIZE = 26
+OCR_PADDING = 2
 OCR_CLASS_NAMES = [
     "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
     "Alef", "BE", "ch", "d", "ein", "f", "g", "ghaf", "ghein", "h2",
@@ -104,7 +107,8 @@ class PlateCharClassifier:
         if image.ndim == 3:
             image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         image = cv2.resize(image, (28, 28), interpolation=cv2.INTER_AREA).astype(np.float32)
-        image /= 255.0 if image.max() > 1.0 else 1.0
+        if image.max() > 1.0:
+            image /= 255.0
         image_tensor = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(self.device)
         with torch.no_grad():
             outputs = self.model(image_tensor)
@@ -217,7 +221,7 @@ class InferenceThread(QThread):
         try:
             weights_path = Path(__file__).with_name(DEFAULT_OCR_MODEL_NAME)
             if not weights_path.is_file():
-                self._ocr_status_message = f"مدل OCR یافت نشد: {weights_path}"
+                self._ocr_status_message = f"مدل OCR یافت نشد ({weights_path.name})"
                 return
             self._classifier = PlateCharClassifier(str(weights_path), OCR_CLASS_NAMES)
         except Exception as exc:
@@ -334,11 +338,13 @@ class InferenceThread(QThread):
                 w = stats[i, cv2.CC_STAT_WIDTH]
                 h = stats[i, cv2.CC_STAT_HEIGHT]
                 area = stats[i, cv2.CC_STAT_AREA]
-                if area > OCR_MIN_AREA * img_area and area <= OCR_MAX_AREA * img_area and (w <= h or abs(w - h) < 10):
+                if area > OCR_MIN_AREA * img_area and area <= OCR_MAX_AREA * img_area and (
+                    w <= h or abs(w - h) < OCR_MAX_ASPECT_DIFF
+                ):
                     component_mask = (labels == i).astype("uint8") * 255
                     digit = component_mask[y:y + h, x:x + w]
-                    digit = cv2.resize(digit, (26, 26), interpolation=cv2.INTER_AREA)
-                    digit = np.pad(digit, (2, 2), "constant", constant_values=0).astype(float) / 255.0
+                    digit = cv2.resize(digit, (OCR_DIGIT_SIZE, OCR_DIGIT_SIZE), interpolation=cv2.INTER_AREA)
+                    digit = np.pad(digit, (OCR_PADDING, OCR_PADDING), "constant", constant_values=0).astype(float) / 255.0
                     digits.append((x, digit))
             if not digits:
                 return ""
