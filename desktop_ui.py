@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 import sys
 import time
@@ -11,8 +12,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from PySide6.QtCore import QMutex, QObject, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QFont, QIcon, QImage, QPixmap
+from PySide6.QtCore import QMutex, QSettings, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -37,10 +38,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from ultralytics import YOLO
+from desktop_ui_utils import ensure_output_dir_writable, normalize_plate_text, register_plate_event
 
 DEFAULT_MODEL_NAME = "yolo11_anpr_ghd.pt"
 DEFAULT_OCR_MODEL_NAME = "persian_digit_classifier.pt"
 DEFAULT_OUTPUT_DIR = "outputs"
+DEFAULT_SETTINGS_ORG = "Arashsyberbrother"
+DEFAULT_SETTINGS_APP = "PersianPlateDesktopUI"
 THREAD_STOP_TIMEOUT_MS = 2000
 OCR_MIN_AREA = 0.005
 OCR_MAX_AREA = 0.05
@@ -128,6 +132,7 @@ class InferenceConfig:
     dedupe_interval: int
     save_annotated: bool
     auto_save_log: bool
+    debug_ocr: bool
 
 
 class InferenceThread(QThread):
@@ -142,10 +147,17 @@ class InferenceThread(QThread):
         self._stop = False
         self._pause = False
         self._mutex = QMutex()
-        self._last_saved_time = 0.0
         self._records = []
         self._ocr_status_message = ""
         self._classifier = None
+        self._ocr_debug_dir = None
+        self._plate_last_seen = {}
+        self._plate_duplicate_counts = {}
+        self._fps_sum = 0.0
+        self._fps_samples = 0
+        self._frames_processed = 0
+        self._confidence_sum = 0.0
+        self._started_at = None
 
     def stop(self):
         self._mutex.lock()
@@ -169,9 +181,10 @@ class InferenceThread(QThread):
     def run(self):
         try:
             os.makedirs(self.config.output_dir, exist_ok=True)
+            self._started_at = datetime.now()
             model = YOLO(self.config.weights_path)
             self._init_ocr()
-            self.status_ready.emit({"state": "در حال اجرا"})
+            self.status_ready.emit({"state": "در حال اجرا", **self._stats_payload()})
 
             if self.config.source_type == "image":
                 frame = cv2.imread(self.config.input_path)
@@ -180,7 +193,8 @@ class InferenceThread(QThread):
                 annotated, detections, fps = self._process_frame(model, frame, 0)
                 self.frame_ready.emit(annotated)
                 self._emit_detections(detections)
-                self.status_ready.emit({"fps": fps, "state": "اتمام"})
+                self._update_stats(detections, fps)
+                self.status_ready.emit({"fps": fps, "state": "اتمام", **self._stats_payload()})
             else:
                 source = 0 if self.config.source_type == "webcam" else self.config.input_path
                 cap = cv2.VideoCapture(source)
@@ -204,16 +218,18 @@ class InferenceThread(QThread):
                     annotated, detections, fps = self._process_frame(model, frame, frame_idx)
                     self.frame_ready.emit(annotated)
                     self._emit_detections(detections)
-                    self.status_ready.emit({"fps": fps, "state": "در حال اجرا", "frame": frame_idx})
+                    self._update_stats(detections, fps)
+                    self.status_ready.emit({"fps": fps, "state": "در حال اجرا", "frame": frame_idx, **self._stats_payload()})
                     frame_idx += 1
 
                 cap.release()
                 if not self._stop:
-                    self.status_ready.emit({"state": "اتمام"})
+                    self.status_ready.emit({"state": "اتمام", **self._stats_payload()})
 
             if self.config.auto_save_log and self._records:
                 log_name = datetime.now().strftime("results_%Y%m%d_%H%M%S.csv")
                 self._write_log(Path(self.config.output_dir) / log_name)
+            self._write_summary(Path(self.config.output_dir) / datetime.now().strftime("summary_%Y%m%d_%H%M%S.json"))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -224,6 +240,9 @@ class InferenceThread(QThread):
                 self._ocr_status_message = f"مدل OCR یافت نشد ({weights_path.name})"
                 return
             self._classifier = PlateCharClassifier(str(weights_path), OCR_CLASS_NAMES)
+            if self.config.debug_ocr:
+                self._ocr_debug_dir = Path(self.config.output_dir) / "ocr_debug"
+                self._ocr_debug_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
             self._ocr_status_message = f"OCR غیرفعال شد: {exc}"
             self._classifier = None
@@ -237,10 +256,54 @@ class InferenceThread(QThread):
         with path.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=["timestamp", "frame_index", "plate_text", "confidence", "crop_path", "annotated_path"],
+                fieldnames=[
+                    "timestamp",
+                    "frame_index",
+                    "plate_text",
+                    "confidence",
+                    "duplicate_count",
+                    "crop_path",
+                    "annotated_path",
+                ],
             )
             writer.writeheader()
             writer.writerows(self._records)
+
+    def _update_stats(self, detections, fps):
+        self._frames_processed += 1
+        self._fps_sum += fps
+        self._fps_samples += 1
+        for item in detections:
+            self._confidence_sum += float(item.get("confidence", 0.0))
+
+    def _stats_payload(self):
+        detections_count = len(self._records)
+        avg_conf = self._confidence_sum / max(detections_count, 1)
+        avg_fps = self._fps_sum / max(self._fps_samples, 1)
+        return {
+            "detections_count": detections_count,
+            "avg_confidence": avg_conf,
+            "avg_fps": avg_fps,
+            "frames_processed": self._frames_processed,
+        }
+
+    def _write_summary(self, path: Path):
+        finished_at = datetime.now()
+        duration = (finished_at - self._started_at).total_seconds() if self._started_at else 0.0
+        unique_plates = sorted({r.get("plate_text", "") for r in self._records if r.get("plate_text")})
+        summary = {
+            "started_at": self._started_at.isoformat() if self._started_at else "",
+            "finished_at": finished_at.isoformat(),
+            "duration_seconds": round(duration, 3),
+            "frames_processed": self._frames_processed,
+            "detections_saved": len(self._records),
+            "unique_plate_count": len(unique_plates),
+            "unique_plates": unique_plates,
+            "average_confidence": round(self._confidence_sum / max(len(self._records), 1), 4),
+            "average_fps": round(self._fps_sum / max(self._fps_samples, 1), 3),
+        }
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(summary, f, ensure_ascii=False, indent=2)
 
     def _process_frame(self, model: YOLO, frame, frame_idx: int):
         start = time.perf_counter()
@@ -258,7 +321,6 @@ class InferenceThread(QThread):
 
         if boxes is not None and len(boxes) > 0:
             now = time.time()
-            allow_save = self.config.dedupe_interval <= 0 or (now - self._last_saved_time) >= self.config.dedupe_interval
             frame_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
             frame_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             for det_idx, box in enumerate(boxes):
@@ -274,7 +336,7 @@ class InferenceThread(QThread):
                 if x2c > x1c and y2c > y1c:
                     crop = frame[y1c:y2c, x1c:x2c]
                     if crop.size > 0:
-                        plate_text = self._recognize_plate_text(crop)
+                        plate_text = self._recognize_plate_text(crop, f"{frame_stamp}_{frame_idx}_{det_idx}")
 
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 255), 2)
                 cv2.putText(
@@ -288,38 +350,49 @@ class InferenceThread(QThread):
                     cv2.LINE_AA,
                 )
 
-                if allow_save:
-                    if crop is None:
-                        continue
-                    crop_name = f"{frame_stamp}_{frame_idx}_{det_idx}.jpg"
-                    crop_path = str(Path(self.config.output_dir) / crop_name)
-                    cv2.imwrite(crop_path, crop)
+                if crop is None:
+                    continue
 
-                    detections.append(
-                        {
-                            "timestamp": frame_time,
-                            "frame_index": frame_idx,
-                            "plate_text": plate_text if plate_text else self._ocr_status_message,
-                            "confidence": round(conf, 4),
-                            "crop_path": crop_path,
-                            "annotated_path": "",
-                        }
+                duplicate_count = 0
+                should_emit = True
+                if plate_text:
+                    should_emit, duplicate_count = register_plate_event(
+                        self._plate_last_seen,
+                        self._plate_duplicate_counts,
+                        plate_text,
+                        now,
+                        self.config.dedupe_interval,
                     )
+                if not should_emit:
+                    continue
 
-            if allow_save and self.config.save_annotated and detections:
+                crop_name = f"{frame_stamp}_{frame_idx}_{det_idx}.jpg"
+                crop_path = str(Path(self.config.output_dir) / crop_name)
+                cv2.imwrite(crop_path, crop)
+
+                detections.append(
+                    {
+                        "timestamp": frame_time,
+                        "frame_index": frame_idx,
+                        "plate_text": plate_text if plate_text else self._ocr_status_message,
+                        "confidence": round(conf, 4),
+                        "duplicate_count": duplicate_count,
+                        "crop_path": crop_path,
+                        "annotated_path": "",
+                    }
+                )
+
+            if self.config.save_annotated and detections:
                 ann_name = f"{frame_stamp}_{frame_idx}_annotated.jpg"
                 annotated_path = str(Path(self.config.output_dir) / ann_name)
                 cv2.imwrite(annotated_path, annotated)
                 for item in detections:
                     item["annotated_path"] = annotated_path
 
-            if allow_save:
-                self._last_saved_time = now
-
         fps = 1.0 / max(time.perf_counter() - start, 1e-6)
         return annotated, detections, fps
 
-    def _recognize_plate_text(self, plate_crop):
+    def _recognize_plate_text(self, plate_crop, debug_tag=None):
         if self._classifier is None:
             return ""
         try:
@@ -350,7 +423,11 @@ class InferenceThread(QThread):
                 return ""
             digits.sort(key=lambda item: item[0])
             chars = [self._classifier.predict(1.0 - digit) for _, digit in digits]
-            return "".join(chars)
+            if self.config.debug_ocr and self._ocr_debug_dir and debug_tag:
+                cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_crop.jpg"), plate_crop)
+                cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
+                cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), thresh)
+            return normalize_plate_text("".join(chars))
         except Exception:
             return ""
 
@@ -362,8 +439,12 @@ class MainWindow(QMainWindow):
         self.resize(1500, 860)
         self.thread = None
         self.records = []
+        self._fps_sum = 0.0
+        self._fps_samples = 0
+        self.settings = QSettings(DEFAULT_SETTINGS_ORG, DEFAULT_SETTINGS_APP)
 
         self._build_ui()
+        self._load_settings()
         self._apply_style()
 
     def _build_ui(self):
@@ -410,6 +491,7 @@ class MainWindow(QMainWindow):
         self.save_annotated_cb = QCheckBox("ذخیره فریم‌های حاشیه‌نویسی‌شده")
         self.auto_log_cb = QCheckBox("ذخیره خودکار گزارش CSV")
         self.auto_log_cb.setChecked(True)
+        self.debug_ocr_cb = QCheckBox("حالت دیباگ OCR (ذخیره مراحل میانی)")
 
         left_widget = QFrame()
         left_layout = QVBoxLayout(left_widget)
@@ -445,6 +527,13 @@ class MainWindow(QMainWindow):
         left_layout.addLayout(form)
         left_layout.addWidget(self.save_annotated_cb)
         left_layout.addWidget(self.auto_log_cb)
+        left_layout.addWidget(self.debug_ocr_cb)
+        self.open_output_btn = QPushButton("باز کردن پوشه خروجی")
+        self.open_output_btn.clicked.connect(self.open_output_folder)
+        left_layout.addWidget(self.open_output_btn)
+        self.clear_results_btn = QPushButton("پاک‌کردن نتایج")
+        self.clear_results_btn.clicked.connect(self.clear_results)
+        left_layout.addWidget(self.clear_results_btn)
         left_layout.addStretch(1)
 
         self.preview_label = QLabel("پیش‌نمایش")
@@ -461,9 +550,23 @@ class MainWindow(QMainWindow):
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.verticalHeader().setVisible(False)
         self.results_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.results_table.setSortingEnabled(True)
+
+        self.filter_text_edit = QLineEdit()
+        self.filter_text_edit.setPlaceholderText("فیلتر متن پلاک")
+        self.filter_text_edit.textChanged.connect(self._apply_results_filter)
+        self.filter_conf_spin = QDoubleSpinBox()
+        self.filter_conf_spin.setRange(0.0, 1.0)
+        self.filter_conf_spin.setSingleStep(0.05)
+        self.filter_conf_spin.setValue(0.0)
+        self.filter_conf_spin.valueChanged.connect(self._apply_results_filter)
 
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(self.filter_text_edit)
+        filter_row.addWidget(self.filter_conf_spin)
+        right_layout.addLayout(filter_row)
         right_layout.addWidget(self.results_table)
 
         splitter = QSplitter()
@@ -503,18 +606,32 @@ class MainWindow(QMainWindow):
         self.export_action.triggered.connect(self.export_results)
         toolbar.addAction(self.export_action)
 
+        self.open_output_action = QAction("باز کردن خروجی", self)
+        self.open_output_action.triggered.connect(self.open_output_folder)
+        toolbar.addAction(self.open_output_action)
+
+        self.clear_action = QAction("پاک‌کردن نتایج", self)
+        self.clear_action.triggered.connect(self.clear_results)
+        toolbar.addAction(self.clear_action)
+
     def _build_status_bar(self):
         bar = QStatusBar()
         self.setStatusBar(bar)
 
         self.fps_label = QLabel("FPS: 0.0")
+        self.avg_fps_label = QLabel("Avg FPS: 0.0")
         self.device_label = QLabel("دستگاه: CPU")
         self.state_label = QLabel("وضعیت: آماده")
+        self.total_label = QLabel("پلاک‌ها: 0")
+        self.avg_conf_label = QLabel("میانگین اطمینان: 0.00")
         self.error_label = QLabel("")
 
         bar.addPermanentWidget(self.fps_label)
+        bar.addPermanentWidget(self.avg_fps_label)
         bar.addPermanentWidget(self.device_label)
         bar.addPermanentWidget(self.state_label)
+        bar.addPermanentWidget(self.total_label)
+        bar.addPermanentWidget(self.avg_conf_label)
         bar.addWidget(self.error_label, 1)
 
     def _apply_style(self):
@@ -572,6 +689,51 @@ class MainWindow(QMainWindow):
             return "video"
         return "webcam"
 
+    def _save_settings(self):
+        self.settings.setValue("source_index", self.source_combo.currentIndex())
+        self.settings.setValue("input_path", self.input_edit.text())
+        self.settings.setValue("weights_path", self.weights_edit.text())
+        self.settings.setValue("device_index", self.device_combo.currentIndex())
+        self.settings.setValue("conf", self.conf_spin.value())
+        self.settings.setValue("iou", self.iou_spin.value())
+        self.settings.setValue("output_dir", self.output_edit.text())
+        self.settings.setValue("dedupe_interval", self.dedupe_interval_spin.value())
+        self.settings.setValue("save_annotated", self.save_annotated_cb.isChecked())
+        self.settings.setValue("auto_log", self.auto_log_cb.isChecked())
+        self.settings.setValue("debug_ocr", self.debug_ocr_cb.isChecked())
+        self.settings.setValue("filter_text", self.filter_text_edit.text())
+        self.settings.setValue("filter_conf", self.filter_conf_spin.value())
+
+    def _load_settings(self):
+        self.source_combo.setCurrentIndex(self.settings.value("source_index", 0, type=int))
+        self.input_edit.setText(self.settings.value("input_path", "", type=str))
+        self.weights_edit.setText(self.settings.value("weights_path", self.weights_edit.text(), type=str))
+        self.device_combo.setCurrentIndex(min(self.settings.value("device_index", 0, type=int), self.device_combo.count() - 1))
+        self.conf_spin.setValue(self.settings.value("conf", 0.35, type=float))
+        self.iou_spin.setValue(self.settings.value("iou", 0.45, type=float))
+        self.output_edit.setText(self.settings.value("output_dir", self.output_edit.text(), type=str))
+        self.dedupe_interval_spin.setValue(self.settings.value("dedupe_interval", 2, type=int))
+        self.save_annotated_cb.setChecked(self.settings.value("save_annotated", False, type=bool))
+        self.auto_log_cb.setChecked(self.settings.value("auto_log", True, type=bool))
+        self.debug_ocr_cb.setChecked(self.settings.value("debug_ocr", False, type=bool))
+        self.filter_text_edit.setText(self.settings.value("filter_text", "", type=str))
+        self.filter_conf_spin.setValue(self.settings.value("filter_conf", 0.0, type=float))
+
+    def _validate_config(self, config: InferenceConfig):
+        if not config.weights_path:
+            return "مسیر وزن مدل خالی است."
+        if not os.path.isfile(config.weights_path):
+            return f"فایل وزن مدل پیدا نشد:\n{config.weights_path}"
+        if config.source_type in {"image", "video"}:
+            if not config.input_path:
+                return "فایل ورودی را انتخاب کنید."
+            if not os.path.isfile(config.input_path):
+                return f"فایل ورودی پیدا نشد:\n{config.input_path}"
+        ok, message = ensure_output_dir_writable(config.output_dir)
+        if not ok:
+            return message
+        return ""
+
     def _current_config(self):
         return InferenceConfig(
             source_type=self._source_type_key(),
@@ -584,6 +746,7 @@ class MainWindow(QMainWindow):
             dedupe_interval=int(self.dedupe_interval_spin.value()),
             save_annotated=self.save_annotated_cb.isChecked(),
             auto_save_log=self.auto_log_cb.isChecked(),
+            debug_ocr=self.debug_ocr_cb.isChecked(),
         )
 
     def start_inference(self):
@@ -592,15 +755,15 @@ class MainWindow(QMainWindow):
             return
 
         config = self._current_config()
-        if not config.weights_path or not os.path.isfile(config.weights_path):
-            QMessageBox.warning(self, "خطا", "مسیر وزن مدل معتبر نیست.")
-            return
-        if config.source_type in {"image", "video"} and (not config.input_path or not os.path.isfile(config.input_path)):
-            QMessageBox.warning(self, "خطا", "مسیر ورودی معتبر نیست.")
+        validation_error = self._validate_config(config)
+        if validation_error:
+            QMessageBox.warning(self, "خطا", validation_error)
             return
 
         self.results_table.setRowCount(0)
         self.records = []
+        self._fps_sum = 0.0
+        self._fps_samples = 0
         self.error_label.setText("")
         self.device_label.setText(f"دستگاه: {self.device_combo.currentText()}")
         self.state_label.setText("وضعیت: در حال اجرا")
@@ -612,6 +775,7 @@ class MainWindow(QMainWindow):
         self.thread.error.connect(self._on_error)
         self.thread.finished.connect(lambda: self.state_label.setText("وضعیت: آماده"))
         self.thread.start()
+        self._save_settings()
 
     def toggle_pause(self):
         if not self.thread or not self.thread.isRunning():
@@ -652,16 +816,57 @@ class MainWindow(QMainWindow):
         thumb_item.setIcon(QIcon(pix))
         self.results_table.setItem(row, 4, thumb_item)
         self.records.append(item)
+        self._apply_results_filter()
 
     def _on_status(self, status):
         if "fps" in status:
             self.fps_label.setText(f"FPS: {status['fps']:.1f}")
+            self._fps_sum += status["fps"]
+            self._fps_samples += 1
+            self.avg_fps_label.setText(f"Avg FPS: {self._fps_sum / max(self._fps_samples, 1):.1f}")
         if "state" in status:
             self.state_label.setText(f"وضعیت: {status['state']}")
+        if "detections_count" in status:
+            self.total_label.setText(f"پلاک‌ها: {int(status['detections_count'])}")
+        if "avg_confidence" in status:
+            self.avg_conf_label.setText(f"میانگین اطمینان: {status['avg_confidence']:.2f}")
 
     def _on_error(self, message):
         self.error_label.setText(f"خطا: {message}")
         QMessageBox.critical(self, "خطا", message)
+
+    def _apply_results_filter(self):
+        filter_text = normalize_plate_text(self.filter_text_edit.text())
+        min_conf = float(self.filter_conf_spin.value())
+        for row in range(self.results_table.rowCount()):
+            plate_item = self.results_table.item(row, 2)
+            conf_item = self.results_table.item(row, 3)
+            plate_text = normalize_plate_text(plate_item.text() if plate_item else "")
+            try:
+                conf = float(conf_item.text()) if conf_item else 0.0
+            except (ValueError, TypeError):
+                conf = 0.0
+            visible = (not filter_text or filter_text in plate_text) and conf >= min_conf
+            self.results_table.setRowHidden(row, not visible)
+
+    def clear_results(self):
+        self.results_table.setRowCount(0)
+        self.records = []
+        self.total_label.setText("پلاک‌ها: 0")
+        self.avg_conf_label.setText("میانگین اطمینان: 0.00")
+        self.fps_label.setText("FPS: 0.0")
+        self.avg_fps_label.setText("Avg FPS: 0.0")
+
+    def open_output_folder(self):
+        output_dir = self.output_edit.text().strip()
+        if not output_dir:
+            QMessageBox.warning(self, "خطا", "پوشه خروجی مشخص نشده است.")
+            return
+        ok, message = ensure_output_dir_writable(output_dir)
+        if not ok:
+            QMessageBox.warning(self, "خطا", message)
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(output_dir))
 
     def export_results(self):
         if not self.records:
@@ -675,12 +880,24 @@ class MainWindow(QMainWindow):
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(
                 f,
-                fieldnames=["timestamp", "frame_index", "plate_text", "confidence", "crop_path", "annotated_path"],
+                fieldnames=[
+                    "timestamp",
+                    "frame_index",
+                    "plate_text",
+                    "confidence",
+                    "duplicate_count",
+                    "crop_path",
+                    "annotated_path",
+                ],
             )
             writer.writeheader()
             writer.writerows(self.records)
 
         QMessageBox.information(self, "خروجی", "فایل نتایج ذخیره شد.")
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
