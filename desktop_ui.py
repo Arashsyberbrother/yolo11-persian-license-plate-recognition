@@ -451,6 +451,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
 
         root = QWidget()
+        root.setObjectName("rootSurface")
         self.setCentralWidget(root)
 
         self.source_combo = QComboBox()
@@ -494,6 +495,7 @@ class MainWindow(QMainWindow):
         self.debug_ocr_cb = QCheckBox("حالت دیباگ OCR (ذخیره مراحل میانی)")
 
         left_widget = QFrame()
+        left_widget.setObjectName("glassPanel")
         left_layout = QVBoxLayout(left_widget)
         form = QFormLayout()
         form.addRow("نوع ورودی", self.source_combo)
@@ -537,15 +539,18 @@ class MainWindow(QMainWindow):
         left_layout.addStretch(1)
 
         self.preview_label = QLabel("پیش‌نمایش")
+        self.preview_label.setObjectName("previewGlass")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumSize(700, 500)
         self.preview_label.setFrameStyle(QFrame.StyledPanel)
 
         center_widget = QWidget()
+        center_widget.setObjectName("glassPanel")
         center_layout = QVBoxLayout(center_widget)
         center_layout.addWidget(self.preview_label)
 
         self.results_table = QTableWidget(0, 5)
+        self.results_table.setObjectName("glassTable")
         self.results_table.setHorizontalHeaderLabels(["زمان", "فریم", "متن پلاک", "اطمینان", "تصویر"])
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.verticalHeader().setVisible(False)
@@ -562,6 +567,7 @@ class MainWindow(QMainWindow):
         self.filter_conf_spin.valueChanged.connect(self._apply_results_filter)
 
         right_widget = QWidget()
+        right_widget.setObjectName("glassPanel")
         right_layout = QVBoxLayout(right_widget)
         filter_row = QHBoxLayout()
         filter_row.addWidget(self.filter_text_edit)
@@ -616,6 +622,7 @@ class MainWindow(QMainWindow):
 
     def _build_status_bar(self):
         bar = QStatusBar()
+        bar.setObjectName("glassStatusBar")
         self.setStatusBar(bar)
 
         self.fps_label = QLabel("FPS: 0.0")
@@ -644,17 +651,62 @@ class MainWindow(QMainWindow):
 
         self.setStyleSheet(
             """
-            QMainWindow { background: #0f172a; color: #e2e8f0; }
-            QToolBar { background: #111827; spacing: 8px; padding: 8px; border: none; }
-            QStatusBar { background: #111827; color: #e2e8f0; }
-            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QTableWidget {
-                background: #1f2937; color: #e5e7eb; border: 1px solid #374151; border-radius: 8px; padding: 6px;
+            QMainWindow {
+                background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1, stop: 0 #0b1220, stop: 1 #111c32);
+                color: #e2e8f0;
             }
-            QPushButton { background: #2563eb; color: white; border-radius: 8px; padding: 7px 10px; }
-            QPushButton:hover { background: #1d4ed8; }
+            QWidget#rootSurface {
+                background: transparent;
+            }
+            QFrame#glassPanel, QWidget#glassPanel {
+                background: rgba(30, 41, 59, 0.58);
+                border: 1px solid rgba(148, 163, 184, 0.35);
+                border-radius: 14px;
+            }
+            QToolBar {
+                background: rgba(15, 23, 42, 0.7);
+                spacing: 8px;
+                padding: 8px;
+                border: 1px solid rgba(148, 163, 184, 0.28);
+                border-radius: 12px;
+                margin: 8px;
+            }
+            QStatusBar#glassStatusBar {
+                background: rgba(15, 23, 42, 0.72);
+                color: #e2e8f0;
+                border-top: 1px solid rgba(148, 163, 184, 0.25);
+            }
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox, QTableWidget {
+                background: rgba(30, 41, 59, 0.62);
+                color: #e5e7eb;
+                border: 1px solid rgba(148, 163, 184, 0.38);
+                border-radius: 10px;
+                padding: 6px;
+            }
+            QPushButton {
+                background: rgba(37, 99, 235, 0.92);
+                color: white;
+                border-radius: 10px;
+                border: 1px solid rgba(191, 219, 254, 0.45);
+                padding: 7px 10px;
+            }
+            QPushButton:hover { background: rgba(29, 78, 216, 0.95); }
             QLabel { color: #e2e8f0; }
-            QHeaderView::section { background: #111827; color: #e2e8f0; padding: 6px; border: none; }
-            QTableWidget { gridline-color: #374151; selection-background-color: #1d4ed8; }
+            QLabel#previewGlass {
+                background: rgba(15, 23, 42, 0.62);
+                border: 1px solid rgba(148, 163, 184, 0.3);
+                border-radius: 12px;
+            }
+            QHeaderView::section {
+                background: rgba(15, 23, 42, 0.78);
+                color: #e2e8f0;
+                padding: 6px;
+                border: none;
+            }
+            QTableWidget#glassTable {
+                gridline-color: rgba(148, 163, 184, 0.2);
+                selection-background-color: rgba(37, 99, 235, 0.8);
+            }
             """
         )
 
