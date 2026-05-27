@@ -449,16 +449,18 @@ class InferenceThread(QThread):
                     5,
                 ),
             ]
+            relaxed_max_area_ratio = max(OCR_RELAXED_MAX_AREA, OCR_MAX_AREA * OCR_RELAXED_MAX_AREA_FACTOR)
             area_ranges = [
                 (OCR_MIN_AREA, OCR_MAX_AREA),
                 (
                     OCR_MIN_AREA * OCR_RELAXED_MIN_AREA_FACTOR,
-                    max(OCR_RELAXED_MAX_AREA, OCR_MAX_AREA * OCR_RELAXED_MAX_AREA_FACTOR),
+                    relaxed_max_area_ratio,
                 ),
             ]
 
             digits = []
             best_thresh = threshold_candidates[0]
+            has_enough_digits = False
             for thresh in threshold_candidates:
                 num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(thresh, 8, cv2.CV_32S)
                 img_area = thresh.shape[0] * thresh.shape[1]
@@ -482,8 +484,9 @@ class InferenceThread(QThread):
                         digits = candidate_digits
                         best_thresh = thresh
                     if len(digits) >= 6:
+                        has_enough_digits = True
                         break
-                if len(digits) >= 6:
+                if has_enough_digits:
                     break
             if not digits:
                 return ""
