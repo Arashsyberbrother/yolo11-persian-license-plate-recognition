@@ -7,7 +7,10 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
+import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from PySide6.QtCore import QMutex, QObject, Qt, QThread, Signal
 from PySide6.QtGui import QAction, QFont, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -36,8 +39,77 @@ from PySide6.QtWidgets import (
 from ultralytics import YOLO
 
 DEFAULT_MODEL_NAME = "yolo11_anpr_ghd.pt"
+DEFAULT_OCR_MODEL_NAME = "persian_digit_classifier.pt"
 DEFAULT_OUTPUT_DIR = "outputs"
 THREAD_STOP_TIMEOUT_MS = 2000
+OCR_MIN_AREA = 0.005
+OCR_MAX_AREA = 0.05
+OCR_CLASS_NAMES = [
+    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+    "Alef", "BE", "ch", "d", "ein", "f", "g", "ghaf", "ghein", "h2",
+    "hj", "j", "k", "kh", "l", "m", "n", "p", "r", "s",
+    "sad", "sh", "t", "ta", "th", "Vav", "y", "z", "za", "zad", "zal", "zh",
+]
+
+
+def straighten_skewed_rectangle(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi / 180, threshold=100, minLineLength=100, maxLineGap=10)
+    if lines is None or len(lines) < 2:
+        return img
+    longest_lines = sorted(lines, key=lambda l: np.linalg.norm((l[0][2] - l[0][0], l[0][3] - l[0][1])), reverse=True)[:2]
+    angles = []
+    for line in longest_lines:
+        x1, y1, x2, y2 = line[0]
+        angles.append(np.degrees(np.arctan2(y2 - y1, x2 - x1)))
+    average_angle = np.mean(angles)
+    height, width = img.shape[:2]
+    center = (width // 2, height // 2)
+    matrix = cv2.getRotationMatrix2D(center, average_angle, 1.0)
+    cos_theta = abs(matrix[0, 0])
+    sin_theta = abs(matrix[0, 1])
+    new_width = int((height * sin_theta) + (width * cos_theta))
+    new_height = int((height * cos_theta) + (width * sin_theta))
+    matrix[0, 2] += (new_width / 2) - center[0]
+    matrix[1, 2] += (new_height / 2) - center[1]
+    return cv2.warpAffine(img, matrix, (new_width, new_height), borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0))
+
+
+class FCModel(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.fc1 = nn.Linear(28 * 28, 128)
+        self.fc2 = nn.Linear(128, 64)
+        self.fc3 = nn.Linear(64, num_classes)
+
+    def forward(self, x):
+        x = x.view(-1, 28 * 28)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        return self.fc3(x)
+
+
+class PlateCharClassifier:
+    def __init__(self, weights_path, class_names):
+        self.class_names = class_names
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = FCModel(len(class_names))
+        state_dict = torch.load(weights_path, map_location=self.device)
+        self.model.load_state_dict(state_dict)
+        self.model.to(self.device)
+        self.model.eval()
+
+    def predict(self, image):
+        if image.ndim == 3:
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        image = cv2.resize(image, (28, 28), interpolation=cv2.INTER_AREA).astype(np.float32)
+        image /= 255.0 if image.max() > 1.0 else 1.0
+        image_tensor = torch.from_numpy(image).unsqueeze(0).unsqueeze(0).to(self.device)
+        with torch.no_grad():
+            outputs = self.model(image_tensor)
+            predicted = int(torch.argmax(outputs, dim=1).item())
+        return self.class_names[predicted]
 
 
 @dataclass
@@ -68,6 +140,8 @@ class InferenceThread(QThread):
         self._mutex = QMutex()
         self._last_saved_time = 0.0
         self._records = []
+        self._ocr_error = ""
+        self._classifier = None
 
     def stop(self):
         self._mutex.lock()
@@ -92,6 +166,7 @@ class InferenceThread(QThread):
         try:
             os.makedirs(self.config.output_dir, exist_ok=True)
             model = YOLO(self.config.weights_path)
+            self._init_ocr()
             self.status_ready.emit({"state": "در حال اجرا"})
 
             if self.config.source_type == "image":
@@ -138,6 +213,17 @@ class InferenceThread(QThread):
         except Exception as exc:
             self.error.emit(str(exc))
 
+    def _init_ocr(self):
+        try:
+            weights_path = Path(__file__).with_name(DEFAULT_OCR_MODEL_NAME)
+            if not weights_path.is_file():
+                self._ocr_error = "مدل OCR یافت نشد."
+                return
+            self._classifier = PlateCharClassifier(str(weights_path), OCR_CLASS_NAMES)
+        except Exception as exc:
+            self._ocr_error = f"OCR غیرفعال شد: {exc}"
+            self._classifier = None
+
     def _emit_detections(self, detections):
         for item in detections:
             self._records.append(item)
@@ -174,10 +260,22 @@ class InferenceThread(QThread):
             for det_idx, box in enumerate(boxes):
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 conf = float(box.conf[0])
+                frame_h, frame_w = frame.shape[:2]
+                x1c = max(0, min(x1, frame_w))
+                y1c = max(0, min(y1, frame_h))
+                x2c = max(0, min(x2, frame_w))
+                y2c = max(0, min(y2, frame_h))
+                plate_text = ""
+                crop = None
+                if x2c > x1c and y2c > y1c:
+                    crop = frame[y1c:y2c, x1c:x2c]
+                    if crop.size > 0:
+                        plate_text = self._recognize_plate_text(crop)
+
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 255), 2)
                 cv2.putText(
                     annotated,
-                    f"Plate {conf:.2f}",
+                    plate_text if plate_text else f"Plate {conf:.2f}",
                     (x1, max(20, y1 - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -187,15 +285,7 @@ class InferenceThread(QThread):
                 )
 
                 if allow_save:
-                    frame_h, frame_w = frame.shape[:2]
-                    x1c = max(0, min(x1, frame_w))
-                    y1c = max(0, min(y1, frame_h))
-                    x2c = max(0, min(x2, frame_w))
-                    y2c = max(0, min(y2, frame_h))
-                    if x2c <= x1c or y2c <= y1c:
-                        continue
-                    crop = frame[y1c:y2c, x1c:x2c]
-                    if crop.size == 0:
+                    if crop is None:
                         continue
                     crop_name = f"{frame_stamp}_{frame_idx}_{det_idx}.jpg"
                     crop_path = str(Path(self.config.output_dir) / crop_name)
@@ -205,7 +295,7 @@ class InferenceThread(QThread):
                         {
                             "timestamp": frame_time,
                             "frame_index": frame_idx,
-                            "plate_text": "",
+                            "plate_text": plate_text if plate_text else self._ocr_error,
                             "confidence": round(conf, 4),
                             "crop_path": crop_path,
                             "annotated_path": "",
@@ -224,6 +314,39 @@ class InferenceThread(QThread):
 
         fps = 1.0 / max(time.perf_counter() - start, 1e-6)
         return annotated, detections, fps
+
+    def _recognize_plate_text(self, plate_crop):
+        if self._classifier is None:
+            return ""
+        try:
+            rgb = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2RGB)
+            straight = straighten_skewed_rectangle(rgb)
+            gray = cv2.cvtColor(straight, cv2.COLOR_RGB2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(thresh, 8, cv2.CV_32S)
+            img_area = thresh.shape[0] * thresh.shape[1]
+            digits = []
+            for i in range(1, num_labels):
+                x = stats[i, cv2.CC_STAT_LEFT]
+                y = stats[i, cv2.CC_STAT_TOP]
+                w = stats[i, cv2.CC_STAT_WIDTH]
+                h = stats[i, cv2.CC_STAT_HEIGHT]
+                area = stats[i, cv2.CC_STAT_AREA]
+                if area > OCR_MIN_AREA * img_area and area < OCR_MAX_AREA * img_area and (w <= h or abs(w - h) < 10):
+                    component_mask = (labels == i).astype("uint8") * 255
+                    digit = component_mask[y:y + h, x:x + w]
+                    digit = cv2.resize(digit, (26, 26), interpolation=cv2.INTER_AREA)
+                    digit = np.pad(digit, (2, 2), "constant", constant_values=0).astype(float) / 255.0
+                    digits.append((x, digit))
+            if not digits:
+                return ""
+            digits.sort(key=lambda item: item[0])
+            chars = [self._classifier.predict(1.0 - digit) for _, digit in digits]
+            return "".join(chars)
+        except Exception:
+            return ""
 
 
 class MainWindow(QMainWindow):
