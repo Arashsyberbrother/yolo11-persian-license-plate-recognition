@@ -448,7 +448,7 @@ class InferenceThread(QThread):
             ]
             area_ranges = [
                 (OCR_MIN_AREA, OCR_MAX_AREA),
-                (OCR_MIN_AREA * 0.5, min(0.12, OCR_MAX_AREA * 2.4)),
+                (OCR_MIN_AREA * 0.5, max(0.12, OCR_MAX_AREA * 2.4)),
             ]
 
             digits = []
@@ -482,7 +482,8 @@ class InferenceThread(QThread):
             if not digits:
                 return ""
             digits.sort(key=lambda item: item[0])
-            chars = [OCR_LABEL_TO_CHAR.get(pred, pred) for pred in (self._classifier.predict(1.0 - digit) for _, digit in digits)]
+            predictions = [self._classifier.predict(1.0 - digit) for _, digit in digits]
+            chars = [OCR_LABEL_TO_CHAR.get(pred, pred) for pred in predictions]
             if self.config.debug_ocr and self._ocr_debug_dir and debug_tag:
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_crop.jpg"), plate_crop)
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
