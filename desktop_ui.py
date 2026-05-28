@@ -47,7 +47,9 @@ DEFAULT_OUTPUT_DIR = "outputs"
 DEFAULT_SETTINGS_ORG = "Arashsyberbrother"
 DEFAULT_SETTINGS_APP = "PersianPlateDesktopUI"
 THREAD_STOP_TIMEOUT_MS = 2000
-CAR_CLASS_ID = 2
+VEHICLE_CLASS_IDS = {2, 3, 5, 7}
+VEHICLE_CONF_MIN = 0.15
+VEHICLE_CONF_SCALE = 0.6
 OCR_MIN_AREA = 0.005
 OCR_MAX_AREA = 0.05
 OCR_MAX_ASPECT_DIFF = 10
@@ -361,9 +363,10 @@ class InferenceThread(QThread):
         frame_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         car_regions = []
+        vehicle_conf = max(VEHICLE_CONF_MIN, float(self.config.conf) * VEHICLE_CONF_SCALE)
         car_results = car_model.predict(
             frame,
-            conf=self.config.conf,
+            conf=vehicle_conf,
             iou=self.config.iou,
             device=self.config.device,
             verbose=False,
@@ -372,7 +375,7 @@ class InferenceThread(QThread):
         if car_boxes is not None and len(car_boxes) > 0:
             for box in car_boxes:
                 cls_id = int(box.cls[0]) if box.cls is not None else -1
-                if cls_id != CAR_CLASS_ID:
+                if cls_id not in VEHICLE_CLASS_IDS:
                     continue
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 conf = float(box.conf[0])
@@ -410,7 +413,7 @@ class InferenceThread(QThread):
                 cv2.rectangle(annotated, (x1c, y1c), (x2c, y2c), (0, 220, 0), 2)
                 cv2.putText(
                     annotated,
-                    f"Car {region['confidence']:.2f}",
+                    f"Vehicle {region['confidence']:.2f}",
                     (x1c, max(20, y1c - 8)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -418,11 +421,6 @@ class InferenceThread(QThread):
                     2,
                     cv2.LINE_AA,
                 )
-                car_name = f"{frame_stamp}_{frame_idx}_car_{car_idx}.jpg"
-                car_crop_path = str(Path(self.config.output_dir) / car_name)
-                if not cv2.imwrite(car_crop_path, car_crop):
-                    car_crop_path = ""
-
             plate_results = plate_model.predict(
                 car_crop,
                 conf=self.config.conf,
@@ -473,6 +471,25 @@ class InferenceThread(QThread):
                     )
                 if not should_emit:
                     continue
+
+                if not car_crop_path:
+                    if region["fallback"]:
+                        plate_w = x2 - x1
+                        plate_h = y2 - y1
+                        vx1 = max(0, x1 - int(plate_w * 1.6))
+                        vx2 = min(frame_w, x2 + int(plate_w * 1.6))
+                        vy1 = max(0, y1 - int(plate_h * 2.8))
+                        vy2 = min(frame_h, y2 + int(plate_h * 2.2))
+                        if vx2 <= vx1 or vy2 <= vy1:
+                            vx1, vy1, vx2, vy2 = x1c, y1c, x2c, y2c
+                        vehicle_crop_to_save = frame[vy1:vy2, vx1:vx2]
+                    else:
+                        vehicle_crop_to_save = car_crop
+                    if vehicle_crop_to_save.size > 0:
+                        vehicle_name = f"{frame_stamp}_{frame_idx}_vehicle_{car_idx}_{det_idx}.jpg"
+                        candidate_path = str(Path(self.config.output_dir) / vehicle_name)
+                        if cv2.imwrite(candidate_path, vehicle_crop_to_save):
+                            car_crop_path = candidate_path
 
                 crop_name = f"{frame_stamp}_{frame_idx}_{car_idx}_{det_idx}.jpg"
                 crop_path = str(Path(self.config.output_dir) / crop_name)
@@ -1040,9 +1057,9 @@ class MainWindow(QMainWindow):
         thumb_item.setIcon(QIcon(pix))
         self.results_table.setItem(row, 4, thumb_item)
         self.records.append(item)
-        plate_text_raw = item.get("plate_text_raw", "")
-        if item.get("plate_text_valid") and plate_text_raw:
-            normalized = normalize_plate_text(plate_text_raw)
+        plate_text_candidate = item.get("plate_text_raw") or item.get("plate_text", "")
+        if item.get("plate_text_valid") and plate_text_candidate:
+            normalized = normalize_plate_text(plate_text_candidate)
             if normalized and normalized not in self._unique_plates:
                 self._unique_plates.add(normalized)
                 self.plates_list.addItem(normalized)
