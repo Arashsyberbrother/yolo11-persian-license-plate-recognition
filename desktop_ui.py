@@ -6,8 +6,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 import cv2
 import numpy as np
 import torch
@@ -227,7 +225,7 @@ class InferenceThread(QThread):
             os.makedirs(self.config.output_dir, exist_ok=True)
             self._started_at = datetime.now()
             plate_model = YOLO(self.config.weights_path)
-            self._car_model = YOLO(self.config.car_weights_path) if self.config.car_weights_path else None
+            self._car_model = YOLO(self.config.car_weights_path)
             self._init_ocr()
             self.status_ready.emit({"state": "در حال اجرا", **self._stats_payload()})
 
@@ -353,7 +351,7 @@ class InferenceThread(QThread):
         with path.open("w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    def _process_frame(self, plate_model: YOLO, car_model: Optional[YOLO], frame, frame_idx: int):
+    def _process_frame(self, plate_model: YOLO, car_model: YOLO, frame, frame_idx: int):
         start = time.perf_counter()
         annotated = frame.copy()
         detections = []
@@ -363,35 +361,34 @@ class InferenceThread(QThread):
         frame_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         car_regions = []
-        if car_model is not None:
-            car_results = car_model.predict(
-                frame,
-                conf=self.config.conf,
-                iou=self.config.iou,
-                device=self.config.device,
-                verbose=False,
-            )
-            car_boxes = car_results[0].boxes if car_results and car_results[0].boxes is not None else None
-            if car_boxes is not None and len(car_boxes) > 0:
-                for box in car_boxes:
-                    cls_id = int(box.cls[0]) if box.cls is not None else -1
-                    if cls_id != CAR_CLASS_ID:
-                        continue
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                    conf = float(box.conf[0])
-                    x1c = max(0, min(x1, frame_w))
-                    y1c = max(0, min(y1, frame_h))
-                    x2c = max(0, min(x2, frame_w))
-                    y2c = max(0, min(y2, frame_h))
-                    if x2c <= x1c or y2c <= y1c:
-                        continue
-                    car_regions.append(
-                        {
-                            "bbox": (x1c, y1c, x2c, y2c),
-                            "confidence": conf,
-                            "fallback": False,
-                        }
-                    )
+        car_results = car_model.predict(
+            frame,
+            conf=self.config.conf,
+            iou=self.config.iou,
+            device=self.config.device,
+            verbose=False,
+        )
+        car_boxes = car_results[0].boxes if car_results and car_results[0].boxes is not None else None
+        if car_boxes is not None and len(car_boxes) > 0:
+            for box in car_boxes:
+                cls_id = int(box.cls[0]) if box.cls is not None else -1
+                if cls_id != CAR_CLASS_ID:
+                    continue
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                conf = float(box.conf[0])
+                x1c = max(0, min(x1, frame_w))
+                y1c = max(0, min(y1, frame_h))
+                x2c = max(0, min(x2, frame_w))
+                y2c = max(0, min(y2, frame_h))
+                if x2c <= x1c or y2c <= y1c:
+                    continue
+                car_regions.append(
+                    {
+                        "bbox": (x1c, y1c, x2c, y2c),
+                        "confidence": conf,
+                        "fallback": False,
+                    }
+                )
 
         if not car_regions:
             car_regions.append(
