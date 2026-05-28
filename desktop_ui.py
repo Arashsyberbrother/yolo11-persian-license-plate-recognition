@@ -486,8 +486,8 @@ class InferenceThread(QThread):
                     else:
                         vehicle_crop_to_save = car_crop
                     if vehicle_crop_to_save.size > 0:
-                        car_name = f"{frame_stamp}_{frame_idx}_vehicle_{car_idx}_{det_idx}.jpg"
-                        candidate_path = str(Path(self.config.output_dir) / car_name)
+                        vehicle_name = f"{frame_stamp}_{frame_idx}_vehicle_{car_idx}_{det_idx}.jpg"
+                        candidate_path = str(Path(self.config.output_dir) / vehicle_name)
                         if cv2.imwrite(candidate_path, vehicle_crop_to_save):
                             car_crop_path = candidate_path
 
