@@ -420,7 +420,8 @@ class InferenceThread(QThread):
                 )
                 car_name = f"{frame_stamp}_{frame_idx}_car_{car_idx}.jpg"
                 car_crop_path = str(Path(self.config.output_dir) / car_name)
-                cv2.imwrite(car_crop_path, car_crop)
+                if not cv2.imwrite(car_crop_path, car_crop):
+                    car_crop_path = ""
 
             plate_results = plate_model.predict(
                 car_crop,
