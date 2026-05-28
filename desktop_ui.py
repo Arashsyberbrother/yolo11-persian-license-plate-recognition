@@ -683,7 +683,7 @@ class MainWindow(QMainWindow):
         self.plates_list_label = QLabel("پلاک‌های شناسایی‌شده")
         left_layout.addWidget(self.plates_list_label)
         self.plates_list = QListWidget()
-        self.plates_list.setObjectName("glassList")
+        self.plates_list.setObjectName("platesList")
         self.plates_list.setMinimumHeight(180)
         left_layout.addWidget(self.plates_list)
         left_layout.addStretch(1)
@@ -837,7 +837,7 @@ class MainWindow(QMainWindow):
                 border-radius: 10px;
                 padding: 6px;
             }
-            QListWidget#glassList {
+            QListWidget#platesList {
                 background: rgba(30, 41, 59, 0.62);
                 color: #e5e7eb;
                 border: 1px solid rgba(148, 163, 184, 0.38);
@@ -1044,7 +1044,7 @@ class MainWindow(QMainWindow):
             normalized = normalize_plate_text(plate_text_raw)
             if normalized and normalized not in self._unique_plates:
                 self._unique_plates.add(normalized)
-                self.plates_list.addItem(plate_text_raw)
+                self.plates_list.addItem(normalized)
         self._apply_results_filter()
 
     def _on_status(self, status):
