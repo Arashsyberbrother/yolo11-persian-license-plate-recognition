@@ -6,7 +6,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-
 import cv2
 import numpy as np
 import torch
@@ -25,6 +24,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -41,11 +41,13 @@ from ultralytics import YOLO
 from desktop_ui_utils import ensure_output_dir_writable, normalize_plate_text, register_plate_event
 
 DEFAULT_MODEL_NAME = "yolo11_anpr_ghd.pt"
+DEFAULT_CAR_MODEL_NAME = "yolo11n.pt"
 DEFAULT_OCR_MODEL_NAME = "persian_digit_classifier.pt"
 DEFAULT_OUTPUT_DIR = "outputs"
 DEFAULT_SETTINGS_ORG = "Arashsyberbrother"
 DEFAULT_SETTINGS_APP = "PersianPlateDesktopUI"
 THREAD_STOP_TIMEOUT_MS = 2000
+CAR_CLASS_ID = 2
 OCR_MIN_AREA = 0.005
 OCR_MAX_AREA = 0.05
 OCR_MAX_ASPECT_DIFF = 10
@@ -163,6 +165,7 @@ class InferenceConfig:
     source_type: str
     input_path: str
     weights_path: str
+    car_weights_path: str
     device: str
     conf: float
     iou: float
@@ -196,6 +199,7 @@ class InferenceThread(QThread):
         self._frames_processed = 0
         self._confidence_sum = 0.0
         self._started_at = None
+        self._car_model = None
 
     def stop(self):
         self._mutex.lock()
@@ -220,7 +224,8 @@ class InferenceThread(QThread):
         try:
             os.makedirs(self.config.output_dir, exist_ok=True)
             self._started_at = datetime.now()
-            model = YOLO(self.config.weights_path)
+            plate_model = YOLO(self.config.weights_path)
+            self._car_model = YOLO(self.config.car_weights_path)
             self._init_ocr()
             self.status_ready.emit({"state": "در حال اجرا", **self._stats_payload()})
 
@@ -228,7 +233,7 @@ class InferenceThread(QThread):
                 frame = cv2.imread(self.config.input_path)
                 if frame is None:
                     raise ValueError("تصویر ورودی قابل خواندن نیست.")
-                annotated, detections, fps = self._process_frame(model, frame, 0)
+                annotated, detections, fps = self._process_frame(plate_model, self._car_model, frame, 0)
                 self.frame_ready.emit(annotated)
                 self._emit_detections(detections)
                 self._update_stats(detections, fps)
@@ -253,7 +258,7 @@ class InferenceThread(QThread):
                     if not ok:
                         break
 
-                    annotated, detections, fps = self._process_frame(model, frame, frame_idx)
+                    annotated, detections, fps = self._process_frame(plate_model, self._car_model, frame, frame_idx)
                     self.frame_ready.emit(annotated)
                     self._emit_detections(detections)
                     self._update_stats(detections, fps)
@@ -298,9 +303,12 @@ class InferenceThread(QThread):
                     "timestamp",
                     "frame_index",
                     "plate_text",
+                    "plate_text_raw",
+                    "plate_text_valid",
                     "confidence",
                     "duplicate_count",
                     "crop_path",
+                    "car_crop_path",
                     "annotated_path",
                 ],
             )
@@ -343,38 +351,103 @@ class InferenceThread(QThread):
         with path.open("w", encoding="utf-8") as f:
             json.dump(summary, f, ensure_ascii=False, indent=2)
 
-    def _process_frame(self, model: YOLO, frame, frame_idx: int):
+    def _process_frame(self, plate_model: YOLO, car_model: YOLO, frame, frame_idx: int):
         start = time.perf_counter()
-        results = model.predict(
+        annotated = frame.copy()
+        detections = []
+        frame_h, frame_w = frame.shape[:2]
+        now = time.time()
+        frame_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        frame_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        car_regions = []
+        car_results = car_model.predict(
             frame,
             conf=self.config.conf,
             iou=self.config.iou,
             device=self.config.device,
             verbose=False,
         )
-
-        boxes = results[0].boxes if results and results[0].boxes is not None else None
-        annotated = frame.copy()
-        detections = []
-
-        if boxes is not None and len(boxes) > 0:
-            now = time.time()
-            frame_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            frame_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for det_idx, box in enumerate(boxes):
+        car_boxes = car_results[0].boxes if car_results and car_results[0].boxes is not None else None
+        if car_boxes is not None and len(car_boxes) > 0:
+            for box in car_boxes:
+                cls_id = int(box.cls[0]) if box.cls is not None else -1
+                if cls_id != CAR_CLASS_ID:
+                    continue
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                 conf = float(box.conf[0])
-                frame_h, frame_w = frame.shape[:2]
                 x1c = max(0, min(x1, frame_w))
                 y1c = max(0, min(y1, frame_h))
                 x2c = max(0, min(x2, frame_w))
                 y2c = max(0, min(y2, frame_h))
+                if x2c <= x1c or y2c <= y1c:
+                    continue
+                car_regions.append(
+                    {
+                        "bbox": (x1c, y1c, x2c, y2c),
+                        "confidence": conf,
+                        "fallback": False,
+                    }
+                )
+
+        if not car_regions:
+            car_regions.append(
+                {
+                    "bbox": (0, 0, frame_w, frame_h),
+                    "confidence": 0.0,
+                    "fallback": True,
+                }
+            )
+
+        for car_idx, region in enumerate(car_regions):
+            x1c, y1c, x2c, y2c = region["bbox"]
+            car_crop = frame[y1c:y2c, x1c:x2c]
+            if car_crop.size == 0:
+                continue
+
+            car_crop_path = ""
+            if not region["fallback"]:
+                cv2.rectangle(annotated, (x1c, y1c), (x2c, y2c), (0, 220, 0), 2)
+                cv2.putText(
+                    annotated,
+                    f"Car {region['confidence']:.2f}",
+                    (x1c, max(20, y1c - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 220, 0),
+                    2,
+                    cv2.LINE_AA,
+                )
+                car_name = f"{frame_stamp}_{frame_idx}_car_{car_idx}.jpg"
+                car_crop_path = str(Path(self.config.output_dir) / car_name)
+                if not cv2.imwrite(car_crop_path, car_crop):
+                    car_crop_path = ""
+
+            plate_results = plate_model.predict(
+                car_crop,
+                conf=self.config.conf,
+                iou=self.config.iou,
+                device=self.config.device,
+                verbose=False,
+            )
+            plate_boxes = plate_results[0].boxes if plate_results and plate_results[0].boxes is not None else None
+            if plate_boxes is None or len(plate_boxes) == 0:
+                continue
+
+            for det_idx, box in enumerate(plate_boxes):
+                px1, py1, px2, py2 = map(int, box.xyxy[0].tolist())
+                conf = float(box.conf[0])
+                x1 = max(0, min(px1 + x1c, frame_w))
+                y1 = max(0, min(py1 + y1c, frame_h))
+                x2 = max(0, min(px2 + x1c, frame_w))
+                y2 = max(0, min(py2 + y1c, frame_h))
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
                 plate_text = ""
-                crop = None
-                if x2c > x1c and y2c > y1c:
-                    crop = frame[y1c:y2c, x1c:x2c]
-                    if crop.size > 0:
-                        plate_text = self._recognize_plate_text(crop, f"{frame_stamp}_{frame_idx}_{det_idx}")
+                crop = frame[y1:y2, x1:x2]
+                if crop.size > 0:
+                    plate_text = self._recognize_plate_text(crop, f"{frame_stamp}_{frame_idx}_{car_idx}_{det_idx}")
 
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 255), 2)
                 cv2.putText(
@@ -387,9 +460,6 @@ class InferenceThread(QThread):
                     2,
                     cv2.LINE_AA,
                 )
-
-                if crop is None:
-                    continue
 
                 duplicate_count = 0
                 should_emit = True
@@ -404,7 +474,7 @@ class InferenceThread(QThread):
                 if not should_emit:
                     continue
 
-                crop_name = f"{frame_stamp}_{frame_idx}_{det_idx}.jpg"
+                crop_name = f"{frame_stamp}_{frame_idx}_{car_idx}_{det_idx}.jpg"
                 crop_path = str(Path(self.config.output_dir) / crop_name)
                 cv2.imwrite(crop_path, crop)
 
@@ -413,19 +483,22 @@ class InferenceThread(QThread):
                         "timestamp": frame_time,
                         "frame_index": frame_idx,
                         "plate_text": plate_text if plate_text else self._ocr_status_message,
+                        "plate_text_raw": plate_text,
+                        "plate_text_valid": bool(plate_text),
                         "confidence": round(conf, 4),
                         "duplicate_count": duplicate_count,
                         "crop_path": crop_path,
+                        "car_crop_path": car_crop_path,
                         "annotated_path": "",
                     }
                 )
 
-            if self.config.save_annotated and detections:
-                ann_name = f"{frame_stamp}_{frame_idx}_annotated.jpg"
-                annotated_path = str(Path(self.config.output_dir) / ann_name)
-                cv2.imwrite(annotated_path, annotated)
-                for item in detections:
-                    item["annotated_path"] = annotated_path
+        if self.config.save_annotated and detections:
+            ann_name = f"{frame_stamp}_{frame_idx}_annotated.jpg"
+            annotated_path = str(Path(self.config.output_dir) / ann_name)
+            cv2.imwrite(annotated_path, annotated)
+            for item in detections:
+                item["annotated_path"] = annotated_path
 
         fps = 1.0 / max(time.perf_counter() - start, 1e-6)
         return annotated, detections, fps
@@ -513,6 +586,7 @@ class MainWindow(QMainWindow):
         self._fps_sum = 0.0
         self._fps_samples = 0
         self.settings = QSettings(DEFAULT_SETTINGS_ORG, DEFAULT_SETTINGS_APP)
+        self._unique_plates = set()
 
         self._build_ui()
         self._load_settings()
@@ -607,6 +681,12 @@ class MainWindow(QMainWindow):
         self.clear_results_btn = QPushButton("پاک‌کردن نتایج")
         self.clear_results_btn.clicked.connect(self.clear_results)
         left_layout.addWidget(self.clear_results_btn)
+        self.plates_list_label = QLabel("پلاک‌های شناسایی‌شده")
+        left_layout.addWidget(self.plates_list_label)
+        self.plates_list = QListWidget()
+        self.plates_list.setObjectName("platesList")
+        self.plates_list.setMinimumHeight(180)
+        left_layout.addWidget(self.plates_list)
         left_layout.addStretch(1)
 
         self.preview_label = QLabel("پیش‌نمایش")
@@ -758,6 +838,12 @@ class MainWindow(QMainWindow):
                 border-radius: 10px;
                 padding: 6px;
             }
+            QListWidget#platesList {
+                background: rgba(30, 41, 59, 0.62);
+                color: #e5e7eb;
+                border: 1px solid rgba(148, 163, 184, 0.38);
+                border-radius: 10px;
+            }
             QPushButton {
                 background: rgba(37, 99, 235, 0.92);
                 color: white;
@@ -855,6 +941,10 @@ class MainWindow(QMainWindow):
             return "مسیر وزن مدل خالی است."
         if not os.path.isfile(config.weights_path):
             return f"فایل وزن مدل پیدا نشد:\n{config.weights_path}"
+        if not config.car_weights_path:
+            return "مسیر وزن مدل خودرو خالی است."
+        if not os.path.isfile(config.car_weights_path):
+            return f"فایل وزن مدل خودرو پیدا نشد:\n{config.car_weights_path}"
         if config.source_type in {"image", "video"}:
             if not config.input_path:
                 return "فایل ورودی را انتخاب کنید."
@@ -870,6 +960,7 @@ class MainWindow(QMainWindow):
             source_type=self._source_type_key(),
             input_path=self.input_edit.text().strip(),
             weights_path=self.weights_edit.text().strip(),
+            car_weights_path=str(Path(__file__).with_name(DEFAULT_CAR_MODEL_NAME)),
             device=self.device_combo.currentData(),
             conf=float(self.conf_spin.value()),
             iou=float(self.iou_spin.value()),
@@ -893,6 +984,8 @@ class MainWindow(QMainWindow):
 
         self.results_table.setRowCount(0)
         self.records = []
+        self._unique_plates = set()
+        self.plates_list.clear()
         self._fps_sum = 0.0
         self._fps_samples = 0
         self.error_label.setText("")
@@ -947,6 +1040,12 @@ class MainWindow(QMainWindow):
         thumb_item.setIcon(QIcon(pix))
         self.results_table.setItem(row, 4, thumb_item)
         self.records.append(item)
+        plate_text_raw = item.get("plate_text_raw", "")
+        if item.get("plate_text_valid") and plate_text_raw:
+            normalized = normalize_plate_text(plate_text_raw)
+            if normalized and normalized not in self._unique_plates:
+                self._unique_plates.add(normalized)
+                self.plates_list.addItem(normalized)
         self._apply_results_filter()
 
     def _on_status(self, status):
@@ -983,6 +1082,8 @@ class MainWindow(QMainWindow):
     def clear_results(self):
         self.results_table.setRowCount(0)
         self.records = []
+        self._unique_plates = set()
+        self.plates_list.clear()
         self.total_label.setText("پلاک‌ها: 0")
         self.avg_conf_label.setText("میانگین اطمینان: 0.00")
         self.fps_label.setText("FPS: 0.0")
@@ -1015,9 +1116,12 @@ class MainWindow(QMainWindow):
                     "timestamp",
                     "frame_index",
                     "plate_text",
+                    "plate_text_raw",
+                    "plate_text_valid",
                     "confidence",
                     "duplicate_count",
                     "crop_path",
+                    "car_crop_path",
                     "annotated_path",
                 ],
             )
