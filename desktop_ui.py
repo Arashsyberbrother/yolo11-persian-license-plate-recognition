@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from ultralytics import YOLO
-from desktop_ui_utils import ensure_output_dir_writable, normalize_plate_text, register_plate_event
+from desktop_ui_utils import ensure_output_dir_writable, is_plausible_plate_text, normalize_plate_text, register_plate_event
 
 DEFAULT_MODEL_NAME = "yolo11_anpr_ghd.pt"
 DEFAULT_CAR_MODEL_NAME = "yolo11n.pt"
@@ -202,6 +202,8 @@ class InferenceThread(QThread):
         self._confidence_sum = 0.0
         self._started_at = None
         self._car_model = None
+        self._vehicle_output_dir = None
+        self._plate_output_dir = None
 
     def stop(self):
         self._mutex.lock()
@@ -224,7 +226,12 @@ class InferenceThread(QThread):
 
     def run(self):
         try:
-            os.makedirs(self.config.output_dir, exist_ok=True)
+            output_root = Path(self.config.output_dir)
+            output_root.mkdir(parents=True, exist_ok=True)
+            self._vehicle_output_dir = output_root / "vehicles"
+            self._plate_output_dir = output_root / "plates"
+            self._vehicle_output_dir.mkdir(parents=True, exist_ok=True)
+            self._plate_output_dir.mkdir(parents=True, exist_ok=True)
             self._started_at = datetime.now()
             plate_model = YOLO(self.config.weights_path)
             self._car_model = YOLO(self.config.car_weights_path)
@@ -422,7 +429,8 @@ class InferenceThread(QThread):
                     cv2.LINE_AA,
                 )
                 vehicle_name = f"{frame_stamp}_{frame_idx}_vehicle_{car_idx}.jpg"
-                candidate_path = str(Path(self.config.output_dir) / vehicle_name)
+                vehicle_dir = self._vehicle_output_dir or Path(self.config.output_dir)
+                candidate_path = str(vehicle_dir / vehicle_name)
                 if cv2.imwrite(candidate_path, car_crop):
                     car_crop_path = candidate_path
             plate_results = plate_model.predict(
@@ -491,12 +499,14 @@ class InferenceThread(QThread):
                         vehicle_crop_to_save = car_crop
                     if vehicle_crop_to_save.size > 0:
                         vehicle_name = f"{frame_stamp}_{frame_idx}_vehicle_{car_idx}_{det_idx}.jpg"
-                        candidate_path = str(Path(self.config.output_dir) / vehicle_name)
+                        vehicle_dir = self._vehicle_output_dir or Path(self.config.output_dir)
+                        candidate_path = str(vehicle_dir / vehicle_name)
                         if cv2.imwrite(candidate_path, vehicle_crop_to_save):
                             car_crop_path = candidate_path
 
                 crop_name = f"{frame_stamp}_{frame_idx}_{car_idx}_{det_idx}.jpg"
-                crop_path = str(Path(self.config.output_dir) / crop_name)
+                plate_dir = self._plate_output_dir or Path(self.config.output_dir)
+                crop_path = str(plate_dir / crop_name)
                 cv2.imwrite(crop_path, crop)
 
                 detections.append(
@@ -592,7 +602,10 @@ class InferenceThread(QThread):
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_crop.jpg"), plate_crop)
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), selected_thresh)
-            return normalize_plate_text("".join(chars))
+            normalized = normalize_plate_text("".join(chars))
+            if not is_plausible_plate_text(normalized):
+                return ""
+            return normalized
         except Exception:
             return ""
 

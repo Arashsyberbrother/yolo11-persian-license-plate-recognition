@@ -103,10 +103,11 @@ python desktop_ui.py
 - Persian-first RTL UI with modern dark styling
 - Non-blocking inference (background thread)
 - Live preview with plate bounding boxes
-- Automatic plate crop saving (`YYYYMMDD_HHMMSS_mmm_frame_detection.jpg`)
-- Automatic vehicle crop saving (`*_vehicle_*.jpg`) in output folder
+- Automatic plate crop saving in `outputs/plates/` (`YYYYMMDD_HHMMSS_mmm_frame_detection.jpg`)
+- Automatic vehicle crop saving in `outputs/vehicles/` (`*_vehicle_*.jpg`)
 - Optional annotated-frame saving
 - OCR text normalization and duplicate suppression by plate text + interval
+- OCR plausibility filtering to suppress noisy unreadable plate strings
 - Results table with timestamp/frame/plate text/confidence/thumbnail, sorting, and filters
 - Clear-results and open-output-folder actions from toolbar/panel
 - Runtime analytics in status bar (total detections, average confidence, average FPS)
