@@ -32,8 +32,14 @@ class DesktopUiUtilsSmokeTests(unittest.TestCase):
     def test_is_readable_plate_text_allows_less_strict_candidate(self):
         self.assertTrue(is_readable_plate_text("123ب45"))
 
-    def test_is_readable_plate_text_rejects_short_or_non_digit(self):
+    def test_is_readable_plate_text_allows_upper_boundary(self):
+        self.assertTrue(is_readable_plate_text("1234بپتث5678"))
+
+    def test_is_readable_plate_text_rejects_insufficient_digits(self):
         self.assertFalse(is_readable_plate_text("اااا"))
+
+    def test_is_readable_plate_text_rejects_too_many_letters(self):
+        self.assertFalse(is_readable_plate_text("1234ابپتث"))
 
 
 if __name__ == "__main__":
