@@ -50,6 +50,33 @@ def normalize_plate_text(text: str) -> str:
     return cleaned.upper()
 
 
+def is_plausible_plate_text(text: str) -> bool:
+    normalized = normalize_plate_text(text)
+    if not normalized:
+        return False
+
+    if len(normalized) < 6 or len(normalized) > 10:
+        return False
+
+    digit_count = sum(ch.isdigit() for ch in normalized)
+    letter_count = len(normalized) - digit_count
+    if digit_count < 5 or letter_count > 2:
+        return False
+
+    run_length = 1
+    max_run = 1
+    for idx in range(1, len(normalized)):
+        if normalized[idx] == normalized[idx - 1]:
+            run_length += 1
+            max_run = max(max_run, run_length)
+        else:
+            run_length = 1
+    if max_run >= 4:
+        return False
+
+    return True
+
+
 def register_plate_event(last_seen: dict, duplicate_counts: dict, plate_key: str, now: float, interval_seconds: int):
     if interval_seconds <= 0 or not plate_key:
         return True, 0
