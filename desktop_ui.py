@@ -38,7 +38,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from ultralytics import YOLO
-from desktop_ui_utils import ensure_output_dir_writable, is_plausible_plate_text, normalize_plate_text, register_plate_event
+from desktop_ui_utils import (
+    ensure_output_dir_writable,
+    is_plausible_plate_text,
+    is_readable_plate_text,
+    normalize_plate_text,
+    register_plate_event,
+)
 
 DEFAULT_MODEL_NAME = "yolo11_anpr_ghd.pt"
 DEFAULT_CAR_MODEL_NAME = "yolo11n.pt"
@@ -603,9 +609,11 @@ class InferenceThread(QThread):
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), selected_thresh)
             normalized = normalize_plate_text("".join(chars))
-            if not is_plausible_plate_text(normalized):
-                return ""
-            return normalized
+            if is_plausible_plate_text(normalized):
+                return normalized
+            if is_readable_plate_text(normalized):
+                return normalized
+            return ""
         except Exception:
             return ""
 

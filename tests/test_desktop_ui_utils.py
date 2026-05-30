@@ -1,6 +1,6 @@
 import unittest
 
-from desktop_ui_utils import is_plausible_plate_text, normalize_plate_text, register_plate_event
+from desktop_ui_utils import is_plausible_plate_text, is_readable_plate_text, normalize_plate_text, register_plate_event
 
 
 class DesktopUiUtilsSmokeTests(unittest.TestCase):
@@ -28,6 +28,18 @@ class DesktopUiUtilsSmokeTests(unittest.TestCase):
 
     def test_is_plausible_plate_text_rejects_repeated_gibberish(self):
         self.assertFalse(is_plausible_plate_text("قققققق5"))
+
+    def test_is_readable_plate_text_allows_less_strict_candidate(self):
+        self.assertTrue(is_readable_plate_text("123ب45"))
+
+    def test_is_readable_plate_text_allows_upper_boundary(self):
+        self.assertTrue(is_readable_plate_text("1234بپتث5678"))
+
+    def test_is_readable_plate_text_rejects_insufficient_digits(self):
+        self.assertFalse(is_readable_plate_text("اااا"))
+
+    def test_is_readable_plate_text_rejects_too_many_letters(self):
+        self.assertFalse(is_readable_plate_text("1234ابپتث"))
 
 
 if __name__ == "__main__":

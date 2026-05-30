@@ -59,7 +59,9 @@ def is_plausible_plate_text(text: str) -> bool:
         return False
 
     digit_count = sum(ch.isdigit() for ch in normalized)
-    letter_count = len(normalized) - digit_count
+    letter_count = sum(ch.isalpha() for ch in normalized)
+    if digit_count + letter_count != len(normalized):
+        return False
     if digit_count < 5 or letter_count > 2:
         return False
 
@@ -72,6 +74,21 @@ def is_plausible_plate_text(text: str) -> bool:
         else:
             run_length = 1
     if max_run >= 4:
+        return False
+
+    return True
+
+
+def is_readable_plate_text(text: str) -> bool:
+    normalized = normalize_plate_text(text)
+    if len(normalized) < 5 or len(normalized) > 12:
+        return False
+
+    digit_count = sum(ch.isdigit() for ch in normalized)
+    letter_count = sum(ch.isalpha() for ch in normalized)
+    if digit_count + letter_count != len(normalized):
+        return False
+    if digit_count < 4 or letter_count > 4:
         return False
 
     return True
