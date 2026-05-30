@@ -77,6 +77,19 @@ def is_plausible_plate_text(text: str) -> bool:
     return True
 
 
+def is_readable_plate_text(text: str) -> bool:
+    normalized = normalize_plate_text(text)
+    if len(normalized) < 5 or len(normalized) > 12:
+        return False
+
+    digit_count = sum(ch.isdigit() for ch in normalized)
+    letter_count = len(normalized) - digit_count
+    if digit_count < 4 or letter_count > 4:
+        return False
+
+    return True
+
+
 def register_plate_event(last_seen: dict, duplicate_counts: dict, plate_key: str, now: float, interval_seconds: int):
     if interval_seconds <= 0 or not plate_key:
         return True, 0
