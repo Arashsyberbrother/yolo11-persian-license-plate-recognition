@@ -104,6 +104,7 @@ python desktop_ui.py
 - Non-blocking inference (background thread)
 - Live preview with plate bounding boxes
 - Automatic plate crop saving (`YYYYMMDD_HHMMSS_mmm_frame_detection.jpg`)
+- Automatic vehicle crop saving (`*_vehicle_*.jpg`) in output folder
 - Optional annotated-frame saving
 - OCR text normalization and duplicate suppression by plate text + interval
 - Results table with timestamp/frame/plate text/confidence/thumbnail, sorting, and filters
