@@ -516,13 +516,14 @@ class InferenceThread(QThread):
                 plate_dir = self._plate_output_dir or Path(self.config.output_dir)
                 crop_path = str(plate_dir / crop_name)
                 cv2.imwrite(crop_path, crop)
+                plate_text_display = localize_plate_text_for_display(plate_text) if plate_text else self._ocr_status_message
 
                 detections.append(
                     {
                         "timestamp": frame_time,
                         "frame_index": frame_idx,
                         "plate_text": plate_text if plate_text else self._ocr_status_message,
-                        "plate_text_display": localize_plate_text_for_display(plate_text) if plate_text else self._ocr_status_message,
+                        "plate_text_display": plate_text_display,
                         "plate_text_raw": plate_text,
                         "plate_text_valid": bool(plate_text),
                         "confidence": round(conf, 4),
@@ -1075,7 +1076,7 @@ class MainWindow(QMainWindow):
     def _on_detection(self, item):
         row = self.results_table.rowCount()
         self.results_table.insertRow(row)
-        plate_text_display = item.get("plate_text_display") or item.get("plate_text", "")
+        plate_text_display = item.get("plate_text_display", item.get("plate_text", ""))
         self.results_table.setItem(row, 0, QTableWidgetItem(item["timestamp"]))
         self.results_table.setItem(row, 1, QTableWidgetItem(str(item["frame_index"])))
         self.results_table.setItem(row, 2, QTableWidgetItem(plate_text_display))
