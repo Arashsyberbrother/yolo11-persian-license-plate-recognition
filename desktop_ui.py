@@ -42,6 +42,7 @@ from desktop_ui_utils import (
     ensure_output_dir_writable,
     is_plausible_plate_text,
     is_readable_plate_text,
+    localize_plate_text_for_display,
     normalize_plate_text,
     register_plate_event,
 )
@@ -318,6 +319,7 @@ class InferenceThread(QThread):
                     "timestamp",
                     "frame_index",
                     "plate_text",
+                    "plate_text_display",
                     "plate_text_raw",
                     "plate_text_valid",
                     "confidence",
@@ -520,6 +522,7 @@ class InferenceThread(QThread):
                         "timestamp": frame_time,
                         "frame_index": frame_idx,
                         "plate_text": plate_text if plate_text else self._ocr_status_message,
+                        "plate_text_display": localize_plate_text_for_display(plate_text) if plate_text else self._ocr_status_message,
                         "plate_text_raw": plate_text,
                         "plate_text_valid": bool(plate_text),
                         "confidence": round(conf, 4),
@@ -1072,9 +1075,10 @@ class MainWindow(QMainWindow):
     def _on_detection(self, item):
         row = self.results_table.rowCount()
         self.results_table.insertRow(row)
+        plate_text_display = item.get("plate_text_display") or item.get("plate_text", "")
         self.results_table.setItem(row, 0, QTableWidgetItem(item["timestamp"]))
         self.results_table.setItem(row, 1, QTableWidgetItem(str(item["frame_index"])))
-        self.results_table.setItem(row, 2, QTableWidgetItem(item.get("plate_text", "")))
+        self.results_table.setItem(row, 2, QTableWidgetItem(plate_text_display))
         self.results_table.setItem(row, 3, QTableWidgetItem(f"{item['confidence']:.2f}"))
 
         thumb_item = QTableWidgetItem(Path(item["crop_path"]).name)
@@ -1087,7 +1091,7 @@ class MainWindow(QMainWindow):
             normalized = normalize_plate_text(plate_text_candidate)
             if normalized and normalized not in self._unique_plates:
                 self._unique_plates.add(normalized)
-                self.plates_list.addItem(normalized)
+                self.plates_list.addItem(localize_plate_text_for_display(normalized))
         self._apply_results_filter()
 
     def _on_status(self, status):
@@ -1158,6 +1162,7 @@ class MainWindow(QMainWindow):
                     "timestamp",
                     "frame_index",
                     "plate_text",
+                    "plate_text_display",
                     "plate_text_raw",
                     "plate_text_valid",
                     "confidence",

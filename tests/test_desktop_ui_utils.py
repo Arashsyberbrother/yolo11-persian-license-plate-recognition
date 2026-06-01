@@ -1,11 +1,20 @@
 import unittest
 
-from desktop_ui_utils import is_plausible_plate_text, is_readable_plate_text, normalize_plate_text, register_plate_event
+from desktop_ui_utils import (
+    is_plausible_plate_text,
+    is_readable_plate_text,
+    localize_plate_text_for_display,
+    normalize_plate_text,
+    register_plate_event,
+)
 
 
 class DesktopUiUtilsSmokeTests(unittest.TestCase):
     def test_normalize_plate_text_unifies_digits_and_separators(self):
         self.assertEqual(normalize_plate_text("۱۲-٣ ٤"), "1234")
+
+    def test_localize_plate_text_for_display_uses_persian_digits(self):
+        self.assertEqual(localize_plate_text_for_display("12ب34567"), "۱۲ب۳۴۵۶۷")
 
     def test_register_plate_event_applies_interval_dedup(self):
         last_seen = {}
