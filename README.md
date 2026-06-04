@@ -107,6 +107,7 @@ python desktop_ui.py
 - Automatic vehicle crop saving in `outputs/vehicles/` (`*_vehicle_*.jpg`)
 - Optional annotated-frame saving
 - OCR text normalization and duplicate suppression by plate text + interval
+- Optional EasyOCR integration (GitHub: JaidedAI/EasyOCR) with fallback to local classifier model
 - OCR plausibility filtering to suppress noisy unreadable plate strings
 - Results table with timestamp/frame/plate text/confidence/thumbnail, sorting, and filters
 - Clear-results and open-output-folder actions from toolbar/panel

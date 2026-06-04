@@ -3,3 +3,4 @@ numpy>=1.24.0
 ultralytics>=8.3.0
 torch>=2.0.0
 PySide6>=6.6.0
+easyocr>=1.7.1
