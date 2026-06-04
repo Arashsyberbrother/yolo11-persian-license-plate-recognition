@@ -40,6 +40,21 @@ _CHAR_TRANSLATION = str.maketrans(
     }
 )
 
+_DISPLAY_DIGIT_TRANSLATION = str.maketrans(
+    {
+        "0": "۰",
+        "1": "۱",
+        "2": "۲",
+        "3": "۳",
+        "4": "۴",
+        "5": "۵",
+        "6": "۶",
+        "7": "۷",
+        "8": "۸",
+        "9": "۹",
+    }
+)
+
 
 def normalize_plate_text(text: str) -> str:
     if not text:
@@ -48,6 +63,13 @@ def normalize_plate_text(text: str) -> str:
     cleaned = cleaned.replace(" ", "").replace("-", "").replace("_", "")
     cleaned = "".join(ch for ch in cleaned if ch.isalnum() or ("\u0600" <= ch <= "\u06ff"))
     return cleaned.upper()
+
+
+def localize_plate_text_for_display(text: str) -> str:
+    normalized = normalize_plate_text(text)
+    if not normalized:
+        return ""
+    return normalized.translate(_DISPLAY_DIGIT_TRANSLATION)
 
 
 def is_plausible_plate_text(text: str) -> bool:
