@@ -304,7 +304,7 @@ class InferenceThread(QThread):
             use_gpu = self.config.device != "cpu" and torch.cuda.is_available()
             self._external_ocr = EasyOCRBridge(use_gpu=use_gpu)
         except Exception as exc:
-            status_messages.append(f"OCR آماده GitHub غیرفعال شد: {exc}")
+            status_messages.append(f"EasyOCR غیرفعال شد: {exc}")
 
         try:
             weights_path = Path(__file__).with_name(DEFAULT_OCR_MODEL_NAME)
@@ -562,6 +562,7 @@ class InferenceThread(QThread):
         return annotated, detections, fps
 
     def _recognize_plate_text(self, plate_crop, debug_tag=None):
+        """Recognize text from a BGR plate crop using EasyOCR first, then classifier fallback."""
         raw_external = self._recognize_with_external_ocr(plate_crop)
         finalized_external = self._finalize_plate_text(raw_external)
         if finalized_external:
@@ -638,6 +639,7 @@ class InferenceThread(QThread):
             return ""
 
     def _recognize_with_external_ocr(self, plate_crop):
+        """Run EasyOCR on a BGR plate crop and return best validated text."""
         if self._external_ocr is None:
             return ""
         try:
@@ -646,7 +648,7 @@ class InferenceThread(QThread):
                 return ""
 
             best_text = ""
-            best_score = -1.0
+            best_score = float("-inf")
             for text, score in candidates:
                 finalized = self._finalize_plate_text(text)
                 if not finalized:
@@ -661,6 +663,7 @@ class InferenceThread(QThread):
             return ""
 
     def _finalize_plate_text(self, raw_text):
+        """Normalize and validate OCR text against Iranian plate heuristics."""
         normalized = normalize_plate_text(raw_text)
         strict_candidate = extract_iranian_plate_candidate(normalized)
         if strict_candidate:
