@@ -47,6 +47,7 @@ from desktop_ui_utils import (
     normalize_plate_text,
     register_plate_event,
 )
+from external_ocr_bridge import EasyOCRBridge
 
 DEFAULT_MODEL_NAME = "yolo11_anpr_ghd.pt"
 DEFAULT_CAR_MODEL_NAME = "yolo11n.pt"
@@ -201,6 +202,7 @@ class InferenceThread(QThread):
         self._records = []
         self._ocr_status_message = ""
         self._classifier = None
+        self._external_ocr = None
         self._ocr_debug_dir = None
         self._plate_last_seen = {}
         self._plate_duplicate_counts = {}
@@ -294,18 +296,32 @@ class InferenceThread(QThread):
             self.error.emit(str(exc))
 
     def _init_ocr(self):
+        self._classifier = None
+        self._external_ocr = None
+        status_messages = []
+
+        try:
+            use_gpu = self.config.device != "cpu" and torch.cuda.is_available()
+            self._external_ocr = EasyOCRBridge(use_gpu=use_gpu)
+        except Exception as exc:
+            status_messages.append(f"OCR آماده GitHub غیرفعال شد: {exc}")
+
         try:
             weights_path = Path(__file__).with_name(DEFAULT_OCR_MODEL_NAME)
             if not weights_path.is_file():
-                self._ocr_status_message = f"مدل OCR یافت نشد ({weights_path.name})"
-                return
-            self._classifier = PlateCharClassifier(str(weights_path), OCR_CLASS_NAMES)
+                status_messages.append(f"مدل OCR یافت نشد ({weights_path.name})")
+            else:
+                self._classifier = PlateCharClassifier(str(weights_path), OCR_CLASS_NAMES)
             if self.config.debug_ocr:
                 self._ocr_debug_dir = Path(self.config.output_dir) / "ocr_debug"
                 self._ocr_debug_dir.mkdir(parents=True, exist_ok=True)
         except Exception as exc:
-            self._ocr_status_message = f"OCR غیرفعال شد: {exc}"
+            status_messages.append(f"OCR مدل فعلی غیرفعال شد: {exc}")
             self._classifier = None
+        if self._external_ocr is None and self._classifier is None:
+            self._ocr_status_message = " | ".join(status_messages) if status_messages else "OCR غیرفعال است."
+        else:
+            self._ocr_status_message = ""
 
     def _emit_detections(self, detections):
         for item in detections:
@@ -546,6 +562,10 @@ class InferenceThread(QThread):
         return annotated, detections, fps
 
     def _recognize_plate_text(self, plate_crop, debug_tag=None):
+        raw_external = self._recognize_with_external_ocr(plate_crop)
+        finalized_external = self._finalize_plate_text(raw_external)
+        if finalized_external:
+            return finalized_external
         if self._classifier is None:
             return ""
         try:
@@ -613,17 +633,43 @@ class InferenceThread(QThread):
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_crop.jpg"), plate_crop)
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), selected_thresh)
-            normalized = normalize_plate_text("".join(chars))
-            strict_candidate = extract_iranian_plate_candidate(normalized)
-            if strict_candidate:
-                return strict_candidate
-            if is_plausible_plate_text(normalized):
-                return normalized
-            if is_readable_plate_text(normalized):
-                return normalized
-            return ""
+            return self._finalize_plate_text("".join(chars))
         except Exception:
             return ""
+
+    def _recognize_with_external_ocr(self, plate_crop):
+        if self._external_ocr is None:
+            return ""
+        try:
+            candidates = self._external_ocr.read_candidates(plate_crop)
+            if not candidates:
+                return ""
+
+            best_text = ""
+            best_score = -1.0
+            for text, score in candidates:
+                finalized = self._finalize_plate_text(text)
+                if not finalized:
+                    continue
+                if extract_iranian_plate_candidate(finalized):
+                    return finalized
+                if score > best_score:
+                    best_text = finalized
+                    best_score = score
+            return best_text
+        except Exception:
+            return ""
+
+    def _finalize_plate_text(self, raw_text):
+        normalized = normalize_plate_text(raw_text)
+        strict_candidate = extract_iranian_plate_candidate(normalized)
+        if strict_candidate:
+            return strict_candidate
+        if is_plausible_plate_text(normalized):
+            return normalized
+        if is_readable_plate_text(normalized):
+            return normalized
+        return ""
 
 
 class MainWindow(QMainWindow):
