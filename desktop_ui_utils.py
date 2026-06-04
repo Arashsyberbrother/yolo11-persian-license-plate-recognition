@@ -72,10 +72,43 @@ def localize_plate_text_for_display(text: str) -> str:
     return normalized.translate(_DISPLAY_DIGIT_TRANSLATION)
 
 
+def is_strict_iranian_plate_text(text: str) -> bool:
+    normalized = normalize_plate_text(text)
+    if len(normalized) != 8:
+        return False
+    if not normalized[:2].isdigit():
+        return False
+    letter = normalized[2]
+    if not letter.isalpha() or not ("\u0600" <= letter <= "\u06ff"):
+        return False
+    if not normalized[3:].isdigit():
+        return False
+    return True
+
+
+def extract_iranian_plate_candidate(text: str) -> str:
+    normalized = normalize_plate_text(text)
+    if not normalized:
+        return ""
+    if is_strict_iranian_plate_text(normalized):
+        return normalized
+    if len(normalized) < 8:
+        return ""
+    text_len = len(normalized)
+    for idx in range(0, text_len - 7):
+        candidate = normalized[idx : idx + 8]
+        if is_strict_iranian_plate_text(candidate):
+            return candidate
+    return ""
+
+
 def is_plausible_plate_text(text: str) -> bool:
     normalized = normalize_plate_text(text)
     if not normalized:
         return False
+
+    if is_strict_iranian_plate_text(normalized):
+        return True
 
     if len(normalized) < 6 or len(normalized) > 10:
         return False

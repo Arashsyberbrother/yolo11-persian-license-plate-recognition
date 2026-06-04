@@ -1,6 +1,8 @@
 import unittest
 
 from desktop_ui_utils import (
+    extract_iranian_plate_candidate,
+    is_strict_iranian_plate_text,
     is_plausible_plate_text,
     is_readable_plate_text,
     localize_plate_text_for_display,
@@ -34,6 +36,21 @@ class DesktopUiUtilsSmokeTests(unittest.TestCase):
 
     def test_is_plausible_plate_text_accepts_reasonable_plate_pattern(self):
         self.assertTrue(is_plausible_plate_text("12ب34567"))
+
+    def test_is_strict_iranian_plate_text_accepts_standard_pattern(self):
+        self.assertTrue(is_strict_iranian_plate_text("12ب34567"))
+
+    def test_is_strict_iranian_plate_text_rejects_wrong_structure(self):
+        self.assertFalse(is_strict_iranian_plate_text("1ب234567"))
+
+    def test_is_strict_iranian_plate_text_rejects_non_persian_letter(self):
+        self.assertFalse(is_strict_iranian_plate_text("12A34567"))
+
+    def test_extract_iranian_plate_candidate_recovers_from_noise(self):
+        self.assertEqual(extract_iranian_plate_candidate("XX12ب34567YY"), "12ب34567")
+
+    def test_extract_iranian_plate_candidate_returns_empty_when_missing(self):
+        self.assertEqual(extract_iranian_plate_candidate("12345اب"), "")
 
     def test_is_plausible_plate_text_rejects_repeated_gibberish(self):
         self.assertFalse(is_plausible_plate_text("قققققق5"))

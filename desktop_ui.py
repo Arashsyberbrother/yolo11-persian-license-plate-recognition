@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from ultralytics import YOLO
 from desktop_ui_utils import (
     ensure_output_dir_writable,
+    extract_iranian_plate_candidate,
     is_plausible_plate_text,
     is_readable_plate_text,
     localize_plate_text_for_display,
@@ -613,6 +614,9 @@ class InferenceThread(QThread):
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_straight.jpg"), cv2.cvtColor(straight, cv2.COLOR_RGB2BGR))
                 cv2.imwrite(str(self._ocr_debug_dir / f"{debug_tag}_thresh.jpg"), selected_thresh)
             normalized = normalize_plate_text("".join(chars))
+            strict_candidate = extract_iranian_plate_candidate(normalized)
+            if strict_candidate:
+                return strict_candidate
             if is_plausible_plate_text(normalized):
                 return normalized
             if is_readable_plate_text(normalized):
