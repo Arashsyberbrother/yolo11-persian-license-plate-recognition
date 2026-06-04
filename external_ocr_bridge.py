@@ -14,7 +14,7 @@ class EasyOCRBridge:
     def __init__(self, use_gpu: bool = False, languages: List[str] | None = None):
         try:
             import easyocr  # type: ignore
-        except Exception as exc:  # pragma: no cover - import failure is runtime/environment-specific
+        except (ImportError, ModuleNotFoundError) as exc:  # pragma: no cover - import failure is runtime/environment-specific
             raise RuntimeError("EasyOCR نصب نیست. لطفاً easyocr را نصب کنید.") from exc
 
         self._reader = easyocr.Reader(languages or ["fa", "en"], gpu=bool(use_gpu), verbose=False)

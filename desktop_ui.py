@@ -639,7 +639,11 @@ class InferenceThread(QThread):
             return ""
 
     def _recognize_with_external_ocr(self, plate_crop):
-        """Run EasyOCR on a BGR plate crop and return best validated text."""
+        """Run EasyOCR on a BGR plate crop and return best validated text.
+
+        Returns:
+            str: Validated plate text, or empty string when no valid candidate is found.
+        """
         if self._external_ocr is None:
             return ""
         try:
@@ -664,7 +668,14 @@ class InferenceThread(QThread):
             return ""
 
     def _finalize_plate_text(self, raw_text):
-        """Normalize and validate OCR text against Iranian plate heuristics."""
+        """Normalize and validate OCR text against Iranian plate heuristics.
+
+        Args:
+            raw_text: Raw OCR output text.
+
+        Returns:
+            str: Validated normalized plate text, or empty string.
+        """
         normalized = normalize_plate_text(raw_text)
         strict_candidate = extract_iranian_plate_candidate(normalized)
         if strict_candidate:
