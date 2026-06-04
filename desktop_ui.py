@@ -653,8 +653,9 @@ class InferenceThread(QThread):
                 finalized = self._finalize_plate_text(text)
                 if not finalized:
                     continue
-                if extract_iranian_plate_candidate(finalized):
-                    return finalized
+                strict = extract_iranian_plate_candidate(finalized)
+                if strict:
+                    return strict
                 if score > best_score:
                     best_text = finalized
                     best_score = score
