@@ -1,3 +1,44 @@
+# Python cache and artifacts
 __pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Build and packaging
+build/
+dist/
+
+# Runtime outputs and logs
+outputs/
+results/
+*.log
+
+# Datasets and model checkpoints (keep tracked baseline assets unchanged)
+data/
+datasets/
+weights/
+checkpoints/
+artifacts/
+*.pt
+*.pth
+*.onnx
+
+# Local Git and temp
 .git/
-ae/
+tmp/
